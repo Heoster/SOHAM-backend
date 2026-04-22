@@ -1,0 +1,1047 @@
+{
+  "providers": {
+    "groq": {
+      "type": "groq",
+      "apiKeyEnvVar": "GROQ_API_KEY",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "enabled": true,
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      }
+    },
+    "cerebras": {
+      "type": "cerebras",
+      "apiKeyEnvVar": "CEREBRAS_API_KEY",
+      "baseUrl": "https://api.cerebras.ai/v1",
+      "enabled": true,
+      "rateLimit": {
+        "requestsPerMinute": 100,
+        "requestsPerDay": 50000
+      }
+    },
+    "google": {
+      "type": "google",
+      "apiKeyEnvVar": "GOOGLE_API_KEY",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "enabled": true,
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      }
+    },
+    "huggingface": {
+      "type": "huggingface",
+      "apiKeyEnvVar": "HUGGINGFACE_API_KEY",
+      "baseUrl": "https://router.huggingface.co/v1",
+      "enabled": true,
+      "rateLimit": {
+        "requestsPerMinute": 60,
+        "requestsPerDay": 10000
+      }
+    },
+    "elevenlabs": {
+      "type": "elevenlabs",
+      "apiKeyEnvVar": "ELEVENLABS_API_KEY",
+      "baseUrl": "https://api.elevenlabs.io/v1",
+      "enabled": true,
+      "rateLimit": {
+        "requestsPerMinute": 10,
+        "requestsPerDay": 1000
+      }
+    },
+    "openrouter": {
+      "type": "openrouter",
+      "apiKeyEnvVar": "OPENROUTER_API_KEY",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "enabled": true,
+      "rateLimit": {
+        "requestsPerMinute": 20,
+        "requestsPerDay": 200
+      }
+    }
+  },
+  "models": [
+    {
+      "id": "groq-llama-guard-4-12b",
+      "name": "Llama Guard 4 12B",
+      "provider": "groq",
+      "modelId": "meta-llama/llama-guard-4-12b",
+      "category": "general",
+      "description": "Safety checking model for input/output validation",
+      "contextWindow": 8192,
+      "supportsStreaming": false,
+      "maxOutputTokens": 2048,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 100,
+      "defaultParams": {
+        "temperature": 0.1,
+        "topP": 0.9,
+        "maxOutputTokens": 512
+      },
+      "enabled": true
+    },
+    {
+      "id": "groq-llama-3.2-3b",
+      "name": "Llama 3.1 8B Instant (Groq)",
+      "provider": "groq",
+      "modelId": "llama-3.1-8b-instant",
+      "category": "general",
+      "description": "Fast Llama 3.1 8B for task classification and routing",
+      "contextWindow": 131072,
+      "supportsStreaming": true,
+      "maxOutputTokens": 2048,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 90,
+      "defaultParams": {
+        "temperature": 0.5,
+        "topP": 0.9,
+        "maxOutputTokens": 1024
+      },
+      "enabled": true
+    },
+    {
+      "id": "groq-whisper-v3-turbo",
+      "name": "Whisper V3 Turbo",
+      "provider": "groq",
+      "modelId": "whisper-large-v3-turbo",
+      "category": "multimodal",
+      "description": "Audio transcription model",
+      "contextWindow": 0,
+      "supportsStreaming": false,
+      "maxOutputTokens": 0,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "AUDIO_IN",
+          "supportedFormats": ["mp3", "wav", "m4a", "webm"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 95,
+      "defaultParams": {
+        "temperature": 0,
+        "topP": 1,
+        "maxOutputTokens": 0
+      },
+      "enabled": true
+    },
+    {
+      "id": "groq-playai-tts",
+      "name": "PlayAI TTS",
+      "provider": "groq",
+      "modelId": "playai-tts-1.0",
+      "category": "multimodal",
+      "description": "Text-to-speech synthesis model",
+      "contextWindow": 4096,
+      "supportsStreaming": true,
+      "maxOutputTokens": 0,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "AUDIO_OUT",
+          "supportedFormats": ["mp3", "wav"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 85,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 0
+      },
+      "enabled": true
+    },
+    {
+      "id": "groq-mistral-saba-24b",
+      "name": "Qwen3 32B (Groq)",
+      "provider": "groq",
+      "modelId": "qwen/qwen3-32b",
+      "category": "general",
+      "description": "Qwen3 32B multilingual model for translation and general tasks",
+      "contextWindow": 32768,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 80,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "groq-llama-4-scout-17b",
+      "name": "Llama 4 Scout 17B (Groq)",
+      "provider": "groq",
+      "modelId": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "category": "multimodal",
+      "description": "Meta Llama 4 Scout 17B multimodal model via Groq — verified working",
+      "contextWindow": 131072,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "VISION",
+          "supportedFormats": ["png", "jpg", "webp"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 85,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "groq-gpt-oss-120b",
+      "name": "GPT-OSS 120B (Groq)",
+      "provider": "groq",
+      "modelId": "openai/gpt-oss-120b",
+      "category": "coding",
+      "description": "OpenAI open-weight 120B model via Groq — verified working",
+      "contextWindow": 131072,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 88,
+      "defaultParams": {
+        "temperature": 0.5,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "cerebras-llama-4-scout-17b",
+      "name": "Cerebras Llama 3.1 8B",
+      "provider": "cerebras",
+      "modelId": "llama3.1-8b",
+      "category": "general",
+      "description": "Fast Cerebras model for simple queries and basic tasks",
+      "contextWindow": 8192,
+      "supportsStreaming": true,
+      "maxOutputTokens": 4096,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 100,
+        "requestsPerDay": 50000
+      },
+      "priority": 95,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 2048
+      },
+      "enabled": true
+    },
+    {
+      "id": "cerebras-llama-3.3-70b",
+      "name": "Cerebras Qwen 3 235B",
+      "provider": "cerebras",
+      "modelId": "qwen-3-235b-a22b-instruct-2507",
+      "category": "general",
+      "description": "Massive 235B Qwen model for medium complexity tasks",
+      "contextWindow": 32768,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 100,
+        "requestsPerDay": 50000
+      },
+      "priority": 90,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "cerebras-gpt-oss-120b",
+      "name": "Cerebras GPT-OSS 120B",
+      "provider": "cerebras",
+      "modelId": "gpt-oss-120b",
+      "category": "coding",
+      "description": "OpenAI open-weight 120B model on Cerebras hardware for complex reasoning",
+      "contextWindow": 16384,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 100,
+        "requestsPerDay": 50000
+      },
+      "priority": 95,
+      "defaultParams": {
+        "temperature": 0.5,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "cerebras-deepseek-v3-0324",
+      "name": "Cerebras Z.ai GLM 4.7",
+      "provider": "cerebras",
+      "modelId": "zai-glm-4.7",
+      "category": "coding",
+      "description": "Z.ai GLM 4.7 multimodal model with advanced capabilities",
+      "contextWindow": 16384,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 100,
+        "requestsPerDay": 50000
+      },
+      "priority": 100,
+      "defaultParams": {
+        "temperature": 0.3,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "name": "Gemini 2.5 Flash",
+      "provider": "google",
+      "modelId": "gemini-2.5-flash",
+      "category": "multimodal",
+      "description": "Fast multimodal model with 1M token context window",
+      "contextWindow": 1048576,
+      "supportsStreaming": false,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "VISION",
+          "supportedFormats": ["png", "jpg", "webp", "heic", "heif"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      },
+      "priority": 90,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192
+      },
+      "enabled": true
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "name": "Gemini 2.5 Pro",
+      "provider": "google",
+      "modelId": "gemini-2.5-pro",
+      "category": "multimodal",
+      "description": "Advanced multimodal model with superior reasoning",
+      "contextWindow": 1048576,
+      "supportsStreaming": false,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "VISION",
+          "supportedFormats": ["png", "jpg", "webp", "heic", "heif"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      },
+      "priority": 95,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192
+      },
+      "enabled": true
+    },
+    {
+      "id": "gemini-3-pro-preview",
+      "name": "Gemini 2.5 Pro (Latest)",
+      "provider": "google",
+      "modelId": "gemini-2.5-pro",
+      "category": "multimodal",
+      "description": "Most capable Gemini model for complex reasoning and agentic tasks",
+      "contextWindow": 1048576,
+      "supportsStreaming": false,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "VISION",
+          "supportedFormats": ["png", "jpg", "webp", "heic", "heif"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      },
+      "priority": 100,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192
+      },
+      "enabled": true
+    },
+    {
+      "id": "gemini-2.5-flash-native-audio",
+      "name": "Gemini 2.5 Flash Native Audio",
+      "provider": "google",
+      "modelId": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "category": "multimodal",
+      "description": "Multimodal model with native audio input/output",
+      "contextWindow": 1048576,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "AUDIO_IN",
+          "supportedFormats": ["mp3", "wav", "aac", "flac"]
+        },
+        {
+          "type": "AUDIO_OUT",
+          "supportedFormats": ["mp3", "wav"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      },
+      "priority": 90,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192
+      },
+      "enabled": true
+    },
+    {
+      "id": "gemini-embedding-001",
+      "name": "Gemini Embedding 001",
+      "provider": "google",
+      "modelId": "gemini-embedding-001",
+      "category": "general",
+      "description": "Embedding model for vector-based memory system",
+      "contextWindow": 2048,
+      "supportsStreaming": false,
+      "maxOutputTokens": 0,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      },
+      "priority": 100,
+      "defaultParams": {
+        "temperature": 0,
+        "topP": 1,
+        "maxOutputTokens": 0
+      },
+      "enabled": true
+    },
+    {
+      "id": "imagen-4.0",
+      "name": "Imagen 3 (Google)",
+      "provider": "google",
+      "modelId": "imagen-3.0-generate-002",
+      "category": "multimodal",
+      "description": "Google Imagen 3 image generation model",
+      "contextWindow": 2048,
+      "supportsStreaming": false,
+      "maxOutputTokens": 0,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "IMAGE_GEN",
+          "supportedFormats": ["png", "jpg"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500
+      },
+      "priority": 95,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 0
+      },
+      "enabled": true
+    },
+    {
+      "id": "veo-3.1",
+      "name": "Veo 2 (Google)",
+      "provider": "google",
+      "modelId": "veo-2.0-generate-001",
+      "category": "multimodal",
+      "description": "Google Veo 2 video generation model",
+      "contextWindow": 2048,
+      "supportsStreaming": false,
+      "maxOutputTokens": 0,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "VIDEO_GEN",
+          "supportedFormats": ["mp4", "webm"]
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 5,
+        "requestsPerDay": 100
+      },
+      "priority": 100,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 0
+      },
+      "enabled": true
+    },
+    {
+      "id": "hf-llama-3.1-8b-instruct",
+      "name": "Llama 3.1 8B Instruct (HuggingFace Free)",
+      "provider": "huggingface",
+      "modelId": "meta-llama/Llama-3.1-8B-Instruct",
+      "category": "general",
+      "description": "Instruction-tuned Llama 3.1 8B via HuggingFace Router — free tier",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 2048,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 60,
+        "requestsPerDay": 10000
+      },
+      "priority": 60,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 2048
+      },
+      "enabled": true
+    },
+    {
+      "id": "hf-llama-3.3-70b-instruct",
+      "name": "Llama 3.3 70B Instruct (HuggingFace Free)",
+      "provider": "huggingface",
+      "modelId": "meta-llama/Llama-3.3-70B-Instruct",
+      "category": "general",
+      "description": "Powerful Llama 3.3 70B instruction-tuned via HuggingFace Router — free tier",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 60,
+        "requestsPerDay": 10000
+      },
+      "priority": 65,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "hf-qwen2.5-72b-instruct",
+      "name": "Qwen 2.5 72B Instruct (HuggingFace Free)",
+      "provider": "huggingface",
+      "modelId": "Qwen/Qwen2.5-72B-Instruct",
+      "category": "general",
+      "description": "Alibaba Qwen 2.5 72B instruction-tuned via HuggingFace Router — free tier",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 60,
+        "requestsPerDay": 10000
+      },
+      "priority": 62,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "hf-deepseek-r1-distill-llama-70b",
+      "name": "DeepSeek R1 Distill Llama 70B (HuggingFace Free)",
+      "provider": "huggingface",
+      "modelId": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+      "category": "coding",
+      "description": "DeepSeek R1 reasoning model distilled to Llama 70B via HuggingFace — free tier",
+      "contextWindow": 65536,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 60,
+        "requestsPerDay": 10000
+      },
+      "priority": 63,
+      "defaultParams": {
+        "temperature": 0.5,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "hf-qwen2.5-7b-instruct",
+      "name": "Qwen 2.5 7B Instruct (HuggingFace Free)",
+      "provider": "huggingface",
+      "modelId": "Qwen/Qwen2.5-7B-Instruct",
+      "category": "general",
+      "description": "Alibaba Qwen 2.5 7B fast instruction-tuned model via HuggingFace Router — free tier",
+      "contextWindow": 32768,
+      "supportsStreaming": false,
+      "maxOutputTokens": 2048,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 60,
+        "requestsPerDay": 10000
+      },
+      "priority": 61,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 2048
+      },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-deepseek-r1-free",
+      "name": "DeepSeek R1 (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "deepseek/deepseek-r1:free",
+      "category": "general",
+      "description": "DeepSeek R1 reasoning model — free tier via OpenRouter (intermittent availability)",
+      "contextWindow": 163840,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 50,
+      "defaultParams": { "temperature": 0.6, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": false
+    },
+    {
+      "id": "openrouter-llama-3.3-70b-free",
+      "name": "Llama 3.3 70B Instruct (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "meta-llama/llama-3.3-70b-instruct:free",
+      "category": "general",
+      "description": "Meta Llama 3.3 70B — free tier via OpenRouter (intermittent availability)",
+      "contextWindow": 65536,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 51,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": false
+    },
+    {
+      "id": "openrouter-gemma-4-31b-free",
+      "name": "Gemma 4 31B IT (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "google/gemma-4-31b-it:free",
+      "category": "multimodal",
+      "description": "Google Gemma 4 31B multimodal — free tier via OpenRouter (intermittent)",
+      "contextWindow": 262144,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }, { "type": "VISION", "supportedFormats": ["png", "jpg", "webp"] }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 52,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": false
+    },
+    {
+      "id": "openrouter-gpt-oss-20b-free",
+      "name": "OpenAI GPT-OSS 20B (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "openai/gpt-oss-20b:free",
+      "category": "general",
+      "description": "OpenAI open-weight 21B MoE model — verified free tier via OpenRouter",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 58,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-gpt-oss-120b-free",
+      "name": "OpenAI GPT-OSS 120B (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "openai/gpt-oss-120b:free",
+      "category": "coding",
+      "description": "OpenAI open-weight 117B MoE model for reasoning — verified free tier via OpenRouter",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 59,
+      "defaultParams": { "temperature": 0.5, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-nvidia-nemotron-super-free",
+      "name": "NVIDIA Nemotron 3 Super 120B (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "nvidia/nemotron-3-super-120b-a12b:free",
+      "category": "general",
+      "description": "NVIDIA 120B hybrid MoE with 1M context — verified free tier via OpenRouter",
+      "contextWindow": 262144,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 57,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-gemma-3-27b-free",
+      "name": "Google Gemma 3 27B IT (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "google/gemma-3-27b-it:free",
+      "category": "general",
+      "description": "Google Gemma 3 27B instruction-tuned — verified free tier via OpenRouter",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 56,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-gemma-3-12b-free",
+      "name": "Google Gemma 3 12B IT (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "google/gemma-3-12b-it:free",
+      "category": "general",
+      "description": "Google Gemma 3 12B instruction-tuned — verified free tier via OpenRouter",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 55,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-arcee-trinity-free",
+      "name": "Arcee Trinity Large Preview (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "arcee-ai/trinity-large-preview:free",
+      "category": "general",
+      "description": "Arcee 400B MoE model for creative and agentic tasks — verified free tier via OpenRouter",
+      "contextWindow": 131072,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 54,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-minimax-m2.5-free",
+      "name": "MiniMax M2.5 (OpenRouter Free)",
+      "provider": "openrouter",
+      "modelId": "minimax/minimax-m2.5:free",
+      "category": "coding",
+      "description": "MiniMax M2.5 agentic model for coding and office tasks — verified free tier via OpenRouter",
+      "contextWindow": 196608,
+      "supportsStreaming": false,
+      "maxOutputTokens": 4096,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 53,
+      "defaultParams": { "temperature": 0.5, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "openrouter-elephant-alpha",
+      "name": "OpenRouter Elephant Alpha",
+      "provider": "openrouter",
+      "modelId": "openrouter/elephant-alpha",
+      "category": "general",
+      "description": "OpenRouter Elephant Alpha 100B model — verified free via OpenRouter",
+      "contextWindow": 262144,
+      "supportsStreaming": false,
+      "maxOutputTokens": 32768,
+      "lifecycle": { "status": "ACTIVE" },
+      "capabilities": [{ "type": "TEXT" }],
+      "rateLimit": { "requestsPerMinute": 20, "requestsPerDay": 200 },
+      "priority": 56,
+      "defaultParams": { "temperature": 0.7, "topP": 0.9, "maxOutputTokens": 4096 },
+      "enabled": true
+    },
+    {
+      "id": "gemini-1.5-flash",
+      "provider": "google",
+      "modelId": "gemini-1.5-flash",
+      "category": "multimodal",
+      "description": "Deprecated - Use gemini-2.5-flash instead",
+      "contextWindow": 1048576,
+      "supportsStreaming": false,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "DEAD",
+        "deprecationDate": "2025-02-15",
+        "replacementModelId": "gemini-2.5-flash"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "VISION"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 0,
+        "requestsPerDay": 0
+      },
+      "priority": 0,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192
+      },
+      "enabled": false
+    },
+    {
+      "id": "gemini-1.5-pro",
+      "name": "Gemini 1.5 Pro (DEPRECATED)",
+      "provider": "google",
+      "modelId": "gemini-1.5-pro",
+      "category": "multimodal",
+      "description": "Deprecated - Use gemini-2.5-pro instead",
+      "contextWindow": 2097152,
+      "supportsStreaming": false,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "DEAD",
+        "deprecationDate": "2025-02-15",
+        "replacementModelId": "gemini-2.5-pro"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        },
+        {
+          "type": "VISION"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 0,
+        "requestsPerDay": 0
+      },
+      "priority": 0,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192
+      },
+      "enabled": false
+    }
+  ]
+}
+
