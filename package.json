@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register server.ts",
     "build": "tsc",
+    "postinstall": "npm run build",
     "start": "node -r tsconfig-paths/register dist/server.js",
     "start:ts": "ts-node -r tsconfig-paths/register server.ts",
     "setup": "node setup.js",
