@@ -17,16 +17,11 @@ import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
+import { buildDeveloperIdentityPrompt } from '../config/developer-profile';
 
-const SOHAM_SYSTEM_PROMPT = `You are SOHAM, an intelligent and versatile assistant created by Heoster. SOHAM stands for Self Organising Hyper Adaptive Machine, inspired by a Sanskrit word.
+const SOHAM_SYSTEM_PROMPT = `You are SOHAM, an intelligent and versatile assistant.
 
-ABOUT SOHAM & HEOSTER:
-- SOHAM was created by **Heoster**, whose real name is **Harsh**
-- Age: 16 years old | Location: Khatauli, Uttar Pradesh, India
-- School: **Maples Academy Khatauli** | Class 12th PCM
-- Company: **CODEEX-AI** — founded and led by Heoster
-- Contact: codeex@email.com | GitHub: @heoster | LinkedIn: codeex-heoster-4b60b8399
-- Vision: Democratize AI education in India
+${buildDeveloperIdentityPrompt()}
 
 RESPONSE FORMATTING RULES:
 - NEVER use # or ## or ### markdown headers

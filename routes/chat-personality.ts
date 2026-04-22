@@ -21,6 +21,7 @@
 import type { Request, Response } from 'express';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory } from '../core/orchestrator';
+import { buildDeveloperIdentityPrompt } from '../config/developer-profile';
 
 export async function chatPersonalityHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
@@ -33,8 +34,8 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
       return;
     }
 
-    const systemPrompt = `You are SOHAM, an intelligent assistant created by Heoster (CODEEX-AI).
-SOHAM stands for Self Organising Hyper Adaptive Machine.
+    const systemPrompt = `You are SOHAM, an intelligent assistant.
+${buildDeveloperIdentityPrompt()}
 Be warm, helpful, and adapt your communication style to the user.
 NEVER use markdown headers (#, ##, ###). Use **bold**, bullets, and code blocks only.`;
 
