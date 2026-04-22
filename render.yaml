@@ -2,7 +2,6 @@ services:
   - type: web
     name: soham-backend-server
     env: node
-    rootDir: server
     buildCommand: npm install && npm run build
     startCommand: npm start
     plan: free
