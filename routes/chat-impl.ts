@@ -71,9 +71,15 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // ── Convert history ─────────────────────────────────────────────────────
+    const convertedHistory = history.map((msg: any) => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      content: msg.content,
+    }));
+
     // ── Intent detection — handle image generation before AI call ───────────
     const intentDetector = getIntentDetector();
-    const intent = intentDetector.detect(message);
+    const intent = intentDetector.detect(message, convertedHistory);
 
     if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.7) {
       try {
@@ -128,12 +134,6 @@ ${getToneInstructions(settings.tone || 'helpful')}
 TECHNICAL DEPTH:
 ${getTechnicalInstructions(settings.technicalLevel || 'intermediate')}`;
 
-    // ── Convert history ─────────────────────────────────────────────────────
-    const convertedHistory = history.map((msg: any) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      content: msg.content,
-    }));
-
     // ── Build orchestrated prompt (tools + RAG + memory) ────────────────────
     const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });
 
@@ -173,6 +173,8 @@ ${getTechnicalInstructions(settings.technicalLevel || 'intermediate')}`;
       ragContextCount: agentContext.ragContextCount,
       crossDeviceHistoryCount: agentContext.crossDeviceHistoryCount,
       longTermMemoryCount: agentContext.longTermMemoryCount,
+      userProfileLoaded: agentContext.userProfileLoaded,
+      publicKnowledgeCount: agentContext.publicKnowledgeCount,
       responseTime: `${responseTime}ms`,
       timestamp: new Date().toISOString(),
     });

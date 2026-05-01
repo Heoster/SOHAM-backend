@@ -71,6 +71,13 @@ import { generateImageCFHandler } from './routes/image/generate-cf';
 import { ttsHandler } from './routes/voice/tts';
 import { transcribeHandler } from './routes/voice/transcribe';
 import { extractMemoriesHandler } from './routes/memory/extract';
+import { getProfileHandler, upsertProfileHandler, deleteProfileHandler } from './routes/memory/profile';
+import {
+  storeKnowledgeHandler,
+  searchKnowledgeHandler,
+  storeCorrectionHandler,
+  storeSuggestionHandler,
+} from './routes/memory/knowledge';
 import { healthHandler } from './routes/health';
 // ── Skills v2 ──────────────────────────────────────────────────────────────────
 import { translateHandler } from './routes/ai/translate';
@@ -161,6 +168,17 @@ app.post('/api/voice/transcribe', transcribeHandler);
 // ── Memory ─────────────────────────────────────────────────────────────────────
 app.post('/api/memory/extract', extractMemoriesHandler);
 
+// ── User Profile ───────────────────────────────────────────────────────────────
+app.get('/api/memory/profile/:userId', getProfileHandler);
+app.post('/api/memory/profile/:userId', upsertProfileHandler);
+app.delete('/api/memory/profile/:userId', deleteProfileHandler);
+
+// ── Public Knowledge (Upstash Vector) ─────────────────────────────────────────
+app.post('/api/memory/knowledge', storeKnowledgeHandler);
+app.post('/api/memory/knowledge/search', searchKnowledgeHandler);
+app.post('/api/memory/knowledge/correction', storeCorrectionHandler);
+app.post('/api/memory/knowledge/suggestion', storeSuggestionHandler);
+
 // ── Skills v2 ──────────────────────────────────────────────────────────────────
 app.post('/api/ai/translate', translateHandler);
 app.post('/api/ai/sentiment', sentimentHandler);
@@ -212,6 +230,13 @@ app.use((req, res) => {
       'POST /api/voice/tts',
       'POST /api/voice/transcribe',
       'POST /api/memory/extract',
+      'GET  /api/memory/profile/:userId',
+      'POST /api/memory/profile/:userId',
+      'DELETE /api/memory/profile/:userId',
+      'POST /api/memory/knowledge',
+      'POST /api/memory/knowledge/search',
+      'POST /api/memory/knowledge/correction',
+      'POST /api/memory/knowledge/suggestion',
     ],
   });
 });

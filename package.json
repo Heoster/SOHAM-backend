@@ -11,6 +11,7 @@
     "start:ts": "ts-node server.ts",
     "setup": "node setup.js",
     "typecheck": "tsc --noEmit",
+    "test:intent": "node -r ts-node/register/transpile-only scripts/eval-intent-detector.ts",
     "lint": "eslint . --ext .ts",
     "health": "node dist/server.js --health",
     "prod": "NODE_ENV=production node dist/server.js"

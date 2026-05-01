@@ -1,15 +1,18 @@
 /**
  * Memory Extraction Service
  * STEP 7: Extract and store memories after conversations
- * 
+ *
  * This service runs asynchronously after each conversation to:
  * 1. Extract important facts, preferences, and context
  * 2. Generate embeddings for each memory
- * 3. Store in Firestore with metadata
+ * 3. Store in Supabase memories table
+ * 4. Update the user's structured profile (name, age, location, likes, dislikes…)
  */
 
 import { getMemorySystemService } from './memory-system-service';
 import type { MemoryCategory } from './memory-system-service';
+import { getUserProfileService } from './user-profile-service';
+import type { ExtractedProfileFacts } from './user-profile-service';
 
 export interface ConversationContext {
   userMessage: string;
@@ -72,11 +75,185 @@ export class MemoryExtractionService {
       }
 
       console.log(`[Memory Extraction] Successfully stored ${storedCount}/${memories.length} memories`);
+
+      // ── Also update the user's structured profile ──────────────────────────
+      try {
+        const profileFacts = await this.extractProfileFacts(conversationText);
+        if (Object.keys(profileFacts).length > 0) {
+          const profileService = getUserProfileService();
+          await profileService.mergeExtractedFacts(context.userId, profileFacts);
+          console.log('[Memory Extraction] Profile updated with extracted facts');
+        }
+      } catch (profileErr) {
+        console.warn('[Memory Extraction] Profile update failed:', profileErr);
+      }
+
       return storedCount;
     } catch (error) {
       console.error('[Memory Extraction] Failed:', error);
       return 0;
     }
+  }
+
+  /**
+   * Extract structured profile facts (name, age, location, likes, dislikes…)
+   * from a conversation using an LLM or rule-based fallback.
+   */
+  private async extractProfileFacts(conversationText: string): Promise<ExtractedProfileFacts> {
+    const cerebrasKey = process.env.CEREBRAS_API_KEY;
+    const groqKey = process.env.GROQ_API_KEY;
+    const apiKey = cerebrasKey || groqKey;
+    const baseUrl = cerebrasKey
+      ? 'https://api.cerebras.ai/v1'
+      : 'https://api.groq.com/openai/v1';
+    const model = 'llama-3.3-70b-versatile';
+
+    if (apiKey) {
+      try {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'system',
+                content: `You are a profile extraction system. Extract structured personal information from conversations.
+
+Return ONLY a valid JSON object with these optional fields (omit fields not mentioned):
+{
+  "name": "string — user's first or full name",
+  "age": number — user's age,
+  "location": "string — city, country, or region",
+  "occupation": "string — job title or profession",
+  "language": "string — preferred language",
+  "likes": ["array of things the user likes: topics, foods, hobbies, technologies"],
+  "dislikes": ["array of things the user dislikes"],
+  "customFacts": {
+    "key": "value — any other important personal fact"
+  }
+}
+
+Rules:
+- Only extract information explicitly stated by the user (not the assistant)
+- Do NOT infer or guess
+- If nothing personal is mentioned, return {}
+- Keep values concise (under 60 chars each)
+- For likes/dislikes, extract specific items (e.g. "Python", "spicy food", "dark mode")`,
+              },
+              { role: 'user', content: conversationText },
+            ],
+            temperature: 0.1,
+            max_tokens: 400,
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) return {};
+
+        const data = await response.json() as any;
+        const raw = (data.choices[0].message.content as string).trim();
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return {};
+
+        const parsed = JSON.parse(jsonMatch[0]);
+        return this.sanitizeProfileFacts(parsed);
+      } catch {
+        // Fall through to rule-based
+      }
+    }
+
+    return this.extractProfileFactsRuleBased(conversationText);
+  }
+
+  /**
+   * Rule-based profile fact extraction — no API key needed.
+   */
+  private extractProfileFactsRuleBased(text: string): ExtractedProfileFacts {
+    const facts: ExtractedProfileFacts = {};
+    const lines = text.split('\n').filter(l => l.trim().startsWith('User:'));
+
+    for (const line of lines) {
+      // Name
+      const nameMatch = line.match(/(?:my name is|i(?:'m| am) called|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i);
+      if (nameMatch) facts.name = nameMatch[1];
+
+      // Age
+      const ageMatch = line.match(/\bi(?:'m| am)\s+(\d{1,2})\s+years?\s+old\b/i);
+      if (ageMatch) facts.age = parseInt(ageMatch[1], 10);
+
+      // Location
+      const locMatch = line.match(/\bi(?:'m| am)?\s+(?:from|living in|based in|located in)\s+([A-Za-z\s,]+?)(?:\.|,|$)/i);
+      if (locMatch) facts.location = locMatch[1].trim();
+
+      // Occupation
+      const occMatch = line.match(/\bi(?:'m| am)\s+(?:a |an )?([a-z]+ (?:developer|engineer|designer|doctor|teacher|student|manager|analyst|scientist|writer|artist|lawyer|nurse|chef|architect|consultant))\b/i);
+      if (occMatch) facts.occupation = occMatch[1];
+
+      // Likes
+      const likeMatch = line.match(/\bi\s+(?:like|love|enjoy|prefer)\s+(.+?)(?:\.|,|and|$)/i);
+      if (likeMatch) {
+        facts.likes = facts.likes ?? [];
+        facts.likes.push(likeMatch[1].trim().slice(0, 60));
+      }
+
+      // Dislikes
+      const dislikeMatch = line.match(/\bi\s+(?:hate|dislike|don't like|do not like)\s+(.+?)(?:\.|,|and|$)/i);
+      if (dislikeMatch) {
+        facts.dislikes = facts.dislikes ?? [];
+        facts.dislikes.push(dislikeMatch[1].trim().slice(0, 60));
+      }
+    }
+
+    return facts;
+  }
+
+  /**
+   * Sanitize and validate extracted profile facts.
+   */
+  private sanitizeProfileFacts(raw: any): ExtractedProfileFacts {
+    const facts: ExtractedProfileFacts = {};
+
+    if (typeof raw.name === 'string' && raw.name.length > 0 && raw.name.length < 80) {
+      facts.name = raw.name;
+    }
+    if (typeof raw.age === 'number' && raw.age > 0 && raw.age < 130) {
+      facts.age = raw.age;
+    }
+    if (typeof raw.location === 'string' && raw.location.length > 0 && raw.location.length < 100) {
+      facts.location = raw.location;
+    }
+    if (typeof raw.occupation === 'string' && raw.occupation.length > 0 && raw.occupation.length < 100) {
+      facts.occupation = raw.occupation;
+    }
+    if (typeof raw.language === 'string' && raw.language.length > 0 && raw.language.length < 50) {
+      facts.language = raw.language;
+    }
+    if (Array.isArray(raw.likes)) {
+      facts.likes = raw.likes
+        .filter((l: any) => typeof l === 'string' && l.length > 0)
+        .map((l: string) => l.slice(0, 60))
+        .slice(0, 20);
+    }
+    if (Array.isArray(raw.dislikes)) {
+      facts.dislikes = raw.dislikes
+        .filter((d: any) => typeof d === 'string' && d.length > 0)
+        .map((d: string) => d.slice(0, 60))
+        .slice(0, 20);
+    }
+    if (raw.customFacts && typeof raw.customFacts === 'object') {
+      facts.customFacts = {};
+      for (const [k, v] of Object.entries(raw.customFacts)) {
+        if (typeof k === 'string' && typeof v === 'string' && k.length < 60 && v.length < 200) {
+          facts.customFacts[k] = v;
+        }
+      }
+    }
+
+    return facts;
   }
 
   /**

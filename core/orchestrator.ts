@@ -44,6 +44,8 @@ import {
 } from '../memory/enhanced-rag';
 import { getMemorySystemService } from '../memory/memory-system-service';
 import { getMemoryExtractionService } from '../memory/memory-extraction-service';
+import { getUserProfileService } from '../memory/user-profile-service';
+import { getUpstashKnowledgeService } from '../memory/upstash-knowledge-service';
 
 export interface SohamContextResult {
   prompt: string;
@@ -51,6 +53,8 @@ export interface SohamContextResult {
   ragContextCount: number;
   crossDeviceHistoryCount: number;
   longTermMemoryCount: number;
+  userProfileLoaded: boolean;
+  publicKnowledgeCount: number;
 }
 
 // ─── Long-term memory retrieval ───────────────────────────────────────────────
@@ -97,9 +101,11 @@ export function extractLongTermMemoriesAsync(
 /**
  * Build an enriched prompt by combining:
  *  1. Tool results (weather, news, sports, finance, web search)
- *  2. Short-term: cross-device chat history (Supabase chat_history)
- *  3. Short-term: RAG context snippets (Upstash Vector)
- *  4. Long-term: extracted memories (Supabase memories table)
+ *  2. User profile (name, preferences, likes/dislikes — from Supabase)
+ *  3. Short-term: cross-device chat history (Supabase chat_history)
+ *  4. Short-term: RAG context snippets (Upstash Vector)
+ *  5. Long-term: extracted memories (Supabase memories table)
+ *  6. Public knowledge: suggestions & corrections (Upstash Vector, shared)
  */
 export async function buildSohamPromptContext(input: {
   message: string;
@@ -108,11 +114,23 @@ export async function buildSohamPromptContext(input: {
 }): Promise<SohamContextResult> {
   const { message, userId } = input;
 
-  const [toolResult, ragSnippets, crossDeviceHistory, longTermMemories] = await Promise.all([
+  const profileService = getUserProfileService();
+  const knowledgeService = getUpstashKnowledgeService();
+
+  const [
+    toolResult,
+    ragSnippets,
+    crossDeviceHistory,
+    longTermMemories,
+    userProfile,
+    publicKnowledge,
+  ] = await Promise.all([
     executeSohamTool(message),
     queryRagContext(userId, message, 4),
     loadCrossDeviceHistory(userId, 6),
     searchLongTermMemories(userId, message),
+    userId ? profileService.getProfile(userId) : Promise.resolve(null),
+    knowledgeService.searchKnowledge(message, 3, 0.52),
   ]);
 
   const toolsUsed = toolResult ? [toolResult] : [];
@@ -126,6 +144,16 @@ export async function buildSohamPromptContext(input: {
       `Status: ${toolResult.ok ? 'ok' : 'error'}\n` +
       `${toolResult.output}`
     );
+  }
+
+  // ── User profile (personal info, preferences, likes/dislikes) ──────────────
+  if (userProfile) {
+    const profileContext = profileService.buildProfileContext(userProfile);
+    if (profileContext.trim().length > 0) {
+      contextBlocks.push(
+        `[USER PROFILE — personalise your response using this]\n${profileContext}`
+      );
+    }
   }
 
   // ── Long-term memory (facts, preferences, skills) ───────────────────────────
@@ -153,6 +181,14 @@ export async function buildSohamPromptContext(input: {
     );
   }
 
+  // ── Public knowledge: suggestions & corrections ─────────────────────────────
+  if (publicKnowledge.length > 0) {
+    const knowledgeText = knowledgeService.formatForPrompt(publicKnowledge);
+    contextBlocks.push(
+      `[PUBLIC KNOWLEDGE — verified suggestions & corrections, use when relevant]\n${knowledgeText}`
+    );
+  }
+
   const prompt =
     contextBlocks.length === 0
       ? message
@@ -164,6 +200,8 @@ export async function buildSohamPromptContext(input: {
     ragContextCount: ragSnippets.length,
     crossDeviceHistoryCount: crossDeviceHistory.length,
     longTermMemoryCount: longTermMemories.length,
+    userProfileLoaded: userProfile !== null,
+    publicKnowledgeCount: publicKnowledge.length,
   };
 }
 

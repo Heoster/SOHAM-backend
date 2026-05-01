@@ -101,6 +101,13 @@ export function detectToolIntent(message: string): ToolIntent | null {
   if (/\b(news|headlines|latest updates|breaking)\b/i.test(lower)) {
     return { tool: 'news_search', query: sanitizeQuery(normalized) };
   }
+  if (
+    /\b(current|latest|today|live|recent)\b/i.test(lower) ||
+    /\b(vice president of|prime minister of|president of|ceo of|founder of|governor of|population of|capital of|currency of)\b/i.test(lower) ||
+    /^(who|what|where|when)\s+(is|are|was|were|did|does|do)\b/i.test(lower)
+  ) {
+    return { tool: 'web_search', query: sanitizeQuery(normalized) };
+  }
   if (/\b(search|look up|find on web|web search|research)\b/i.test(lower)) {
     return { tool: 'web_search', query: sanitizeQuery(normalized) };
   }

@@ -52,3 +52,43 @@ CREATE TABLE IF NOT EXISTS image_rate_limits (
 
 ALTER TABLE image_rate_limits ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "service role full access" ON image_rate_limits USING (true) WITH CHECK (true);
+
+-- ── User Profiles (structured personal info, preferences, likes/dislikes) ──
+-- Run this once in your Supabase SQL editor to enable the User Profile feature.
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_id          TEXT PRIMARY KEY,
+  name             TEXT,
+  age              INTEGER,
+  location         TEXT,
+  language         TEXT,
+  timezone         TEXT,
+  occupation       TEXT,
+  preferred_tone   TEXT CHECK (preferred_tone IN ('formal','casual','friendly','technical')),
+  technical_level  TEXT CHECK (technical_level IN ('beginner','intermediate','expert')),
+  response_length  TEXT CHECK (response_length IN ('concise','detailed','balanced')),
+  likes            JSONB NOT NULL DEFAULT '[]',
+  dislikes         JSONB NOT NULL DEFAULT '[]',
+  custom_facts     JSONB NOT NULL DEFAULT '{}',
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS user_profiles_user_id_idx ON user_profiles (user_id);
+
+ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "service role full access" ON user_profiles USING (true) WITH CHECK (true);
+
+-- Auto-update updated_at on every row change
+CREATE OR REPLACE FUNCTION update_user_profiles_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_user_profiles_updated_at ON user_profiles;
+CREATE TRIGGER trg_user_profiles_updated_at
+  BEFORE UPDATE ON user_profiles
+  FOR EACH ROW EXECUTE FUNCTION update_user_profiles_updated_at();
