@@ -117,12 +117,12 @@ function setCached(query: string, result: SearchPipelineResult): void {
 export function analyzeQuery(query: string): QueryAnalysisResult {
   const lower = query.toLowerCase().trim();
 
-  const isNews     = /\b(news|headlines|breaking|latest|today|yesterday|this week|announcement|update|report|story|article)\b/i.test(lower);
-  const isWeather  = /\b(weather|temperature|forecast|rain|humidity|wind|sunny|cloudy|snow|storm|climate|hot|cold)\b/i.test(lower);
-  const isFinance  = /\b(stock|price|crypto|bitcoin|ethereum|market|nifty|sensex|nasdaq|dow|forex|usd|inr|eur|share|invest|trading|fund|ipo)\b/i.test(lower);
-  const isSports   = /\b(cricket|football|soccer|ipl|match|score|live|tournament|league|team|player|goal|wicket|run|innings|series)\b/i.test(lower);
-  const isTimeSens = /\b(today|now|current|live|latest|recent|breaking|right now|this (week|month|year)|just|happening|ongoing)\b/i.test(lower);
-  const isFactual  = /\b(who|what|when|where|why|how|define|explain|meaning|history|invented|founded|capital|population|born|died|created|discovered|wrote|built|designed|located|based)\b/i.test(lower)
+  const isNews     = /\b(news|headlines|breaking|latest|today|yesterday|this week|announcement|update|report|story|article|khabar|samachar|aatki)\b/i.test(lower);
+  const isWeather  = /\b(weather|temperature|forecast|rain|humidity|wind|sunny|cloudy|snow|storm|climate|hot|cold|mausam|baarish|tapman)\b/i.test(lower);
+  const isFinance  = /\b(stock|price|crypto|bitcoin|ethereum|market|nifty|sensex|nasdaq|dow|forex|usd|inr|eur|share|invest|trading|fund|ipo|dam|bhav|kimat|paise)\b/i.test(lower);
+  const isSports   = /\b(cricket|football|soccer|ipl|match|score|live|tournament|league|team|player|goal|wicket|run|innings|series|khel|khiladi|jeet|haar)\b/i.test(lower);
+  const isTimeSens = /\b(today|now|current|live|latest|recent|breaking|right now|this (week|month|year)|just|happening|ongoing|aaj|abhi|turant)\b/i.test(lower);
+  const isFactual  = /\b(who|what|when|where|why|how|define|explain|meaning|history|invented|founded|capital|population|born|died|created|discovered|wrote|built|designed|located|based|kaun|kya|kab|kaha|kyu|kaise|kisne|matlab|arth)\b/i.test(lower)
     || /^(is |are |was |were |does |do |did |has |have |had |can |could |should |would )/i.test(lower);
 
   let queryType: QueryType = 'general';
@@ -135,7 +135,7 @@ export function analyzeQuery(query: string): QueryAnalysisResult {
 
   // Strip common question prefixes to get a cleaner search term
   const cleanQuery = query
-    .replace(/^(search for|find|look up|tell me about|what is|what are|who is|who are|where is|where are|when did|when was|how does?|how do|how is|can you tell me|i want to know|please find)\s+/i, '')
+    .replace(/^(search for|find|look up|tell me about|what is|what are|who is|who are|where is|where are|when did|when was|how does?|how do|how is|can you tell me|i want to know|please find|batao|dhundo|kya hai|kaun hai|kaha hai|kab hua)\s+/i, '')
     .replace(/\?+$/, '')
     .trim() || query;
 
