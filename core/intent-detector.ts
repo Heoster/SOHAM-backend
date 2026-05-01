@@ -196,24 +196,34 @@ export class IntentDetector {
       { regex: /^(can you|could you|please)\s+(search|find|look up|get|fetch)/i, weight: 0.92 },
       { regex: /(latest|current|recent|newest|today'?s?|this week'?s?|aaj ka|abhi ka|hal hi me)\s+(news|updates?|information|data|stats?|trends?|khabar|info|samachar|jankari|taza)/i, weight: 0.92 },
       { regex: /\b(current|latest|today|live|price|weather|score|news|rate|abhi|aaj|live|dam|bhav|kimat|paise|paisa|taza)\b/i, weight: 0.82 },
-      { regex: /\b(vice president of|prime minister of|president of|ceo of|founder of|governor of|chief minister of|district magistrate of|cm of|pm of|dm of|hm of|fm of|rm of|sp of|sho of|ias of|ips of)\b/i, weight: 0.87 },
+      // Factual Lookups - Registered for high-priority web search
+      { regex: /\b(who (invented|created|founded|discovered|wrote|made|built|designed|kisne banaya|kisne kiya|kaun hai))\b/i, weight: 0.98 },
+      { regex: /\b(what (year|date|time|place|country|city) (was|is|did|does|kab|kaha|kon sa))\b/i, weight: 0.98 },
+      { regex: /\b(where (is|are|was|were) .+ (located|based|from|born|founded|kaha par hai))\b/i, weight: 0.98 },
+      { regex: /\b(population of|capital of|currency of|president of|prime minister of|vice president of|ceo of|founder of|governor of|chief minister of|district magistrate of|cm of|pm of|dm of|hm of|fm of|rm of|sp of|sho of|ias of|ips of)\b/i, weight: 0.98 },
     ];
 
     let maxConfidence = requiresWebSearch(contextualMessage) ? 0.88 : 0;
     let extractedQuery = contextualMessage;
     let matchedPattern = maxConfidence > 0 ? 'requiresWebSearch' : 'none';
 
+    let factualMatch = false;
     for (const pattern of patterns) {
       const match = rawMessage.match(pattern.regex) || contextualMessage.match(pattern.regex) || lower.match(pattern.regex);
       if (match && pattern.weight > maxConfidence) {
         maxConfidence = pattern.weight;
         matchedPattern = pattern.regex.source;
         extractedQuery = (match[3] || match[1] || contextualMessage).trim();
+        if (pattern.weight >= 0.98) factualMatch = true;
       }
     }
 
-    if (explanationSignal) {
+    // Factual matches (who is, population, etc.) should resist explanation penalty
+    // because the user needs the LATEST facts from the web.
+    if (explanationSignal && !factualMatch) {
       maxConfidence = Math.min(maxConfidence, 0.62);
+    } else if (explanationSignal && factualMatch) {
+      maxConfidence = Math.min(maxConfidence, 0.91); // High enough to beat CHAT and others
     }
 
     return {
