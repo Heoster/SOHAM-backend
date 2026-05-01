@@ -23,5 +23,5 @@
     "sourceMap": false
   },
   "include": ["./**/*.ts"],
-  "exclude": ["node_modules", "dist", "memory/enhanced-rag-service.ts"]
+  "exclude": ["node_modules", "dist"]
 }

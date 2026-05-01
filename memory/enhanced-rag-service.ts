@@ -1,23 +1,18 @@
 /**
- * Enhanced RAG Service with MCP Integration
- * 
+ * Enhanced RAG Service
+ *
  * Combines:
- * - Upstash Vector for semantic search
- * - Supabase for structured memory storage
- * - MCP tools for real-world knowledge (web, weather, news, etc.)
+ * - Upstash Vector REST API for semantic short-term search (no SDK dependency)
+ * - Supabase REST API for structured long-term memory
  * - Hybrid retrieval: semantic similarity + recency + relevance scoring
- * 
+ *
  * Memory types:
  * - SHORT_TERM: Recent conversation context (Upstash Vector)
- * - LONG_TERM: Extracted facts, preferences, skills (Supabase + Vector)
- * - REAL_WORLD: Live data from MCP tools (web search, weather, news, etc.)
+ * - LONG_TERM:  Extracted facts, preferences, skills (Supabase)
+ * - REAL_WORLD: Live data from tools (web search, weather, news…)
  */
 
-import { Index } from '@upstash/vector';
-
-// ============================================================================
-// Types
-// ============================================================================
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface MemoryChunk {
   id: string;
@@ -54,199 +49,137 @@ export interface RAGResult {
   };
 }
 
-// ============================================================================
-// Upstash Vector Client
-// ============================================================================
+// ─── Upstash REST helpers (no SDK) ────────────────────────────────────────────
 
-function getUpstashClient(): Index | null {
-  const url = process.env.UPSTASH_VECTOR_REST_URL;
-  const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
-  
-  if (!url || !token) {
-    console.warn('[RAG] Upstash Vector not configured');
-    return null;
-  }
-  
-  return new Index({ url, token });
+function getUpstashConfig() {
+  return {
+    url: (process.env.UPSTASH_VECTOR_REST_URL ?? process.env.UPSTASH_VECTOR_URL ?? '').replace(/\/$/, ''),
+    token: process.env.UPSTASH_VECTOR_REST_TOKEN ?? process.env.UPSTASH_VECTOR_TOKEN ?? '',
+  };
 }
 
-// ============================================================================
-// Supabase Client
-// ============================================================================
+function isUpstashReady(): boolean {
+  const { url, token } = getUpstashConfig();
+  return Boolean(url && token);
+}
+
+async function upstashPost(path: string, body: unknown, timeoutMs = 8000): Promise<any> {
+  const { url, token } = getUpstashConfig();
+  const res = await fetch(`${url}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 120)}`);
+  }
+  return res.json();
+}
+
+// ─── Supabase REST helpers ────────────────────────────────────────────────────
+
+function getSupabaseConfig() {
+  return {
+    url: process.env.SUPABASE_URL ?? '',
+    key: process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? '',
+  };
+}
+
+function isSupabaseReady(): boolean {
+  const { url, key } = getSupabaseConfig();
+  return Boolean(url && key);
+}
 
 async function querySupabaseMemories(
   userId: string,
-  query: string,
-  limit: number = 5
+  _query: string,
+  limit = 5
 ): Promise<MemoryChunk[]> {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  
-  if (!supabaseUrl || !serviceKey) {
-    console.warn('[RAG] Supabase not configured');
-    return [];
-  }
-  
+  if (!isSupabaseReady()) return [];
+  const { url, key } = getSupabaseConfig();
+
   try {
-    // Simple keyword search in memories table
     const res = await fetch(
-      `${supabaseUrl}/rest/v1/memories?user_id=eq.${userId}&select=*&order=created_at.desc&limit=${limit}`,
+      `${url}/rest/v1/memories?user_id=eq.${encodeURIComponent(userId)}&select=*&order=created_at.desc&limit=${limit}`,
       {
-        headers: {
-          'apikey': serviceKey,
-          'Authorization': `Bearer ${serviceKey}`,
-        },
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(5000),
       }
     );
-    
-    if (!res.ok) {
-      console.warn(`[RAG] Supabase query failed: ${res.status}`);
-      return [];
-    }
-    
-    const data = await res.json();
-    
-    return data.map((row: any) => ({
+    if (!res.ok) return [];
+
+    const data = await res.json() as any[];
+    return data.map(row => ({
       id: row.id,
       content: row.content,
       type: 'LONG_TERM' as const,
-      category: row.category || 'fact',
+      category: (row.category ?? 'fact') as MemoryChunk['category'],
       userId: row.user_id,
       timestamp: row.created_at,
       metadata: {
         source: 'supabase',
-        relevanceScore: row.relevance || 0.5,
+        relevanceScore: row.importance ?? 0.5,
       },
     }));
-  } catch (error) {
-    console.warn('[RAG] Supabase query error:', error);
+  } catch {
     return [];
   }
 }
 
-// ============================================================================
-// MCP Real-World Knowledge Integration
-// ============================================================================
+// ─── Scoring helpers ──────────────────────────────────────────────────────────
 
-/**
- * Query real-world knowledge via MCP tools
- * This would integrate with MCP servers for:
- * - Web search (Tavily, DuckDuckGo)
- * - Weather (Open-Meteo)
- * - News (GNews)
- * - Wikipedia
- * - etc.
- */
-async function queryRealWorldKnowledge(
-  query: string
-): Promise<MemoryChunk[]> {
-  const chunks: MemoryChunk[] = [];
-  
-  // TODO: Integrate with MCP servers here
-  // For now, return empty array
-  // Future: Call MCP tools based on query intent
-  
-  return chunks;
-}
-
-// ============================================================================
-// Hybrid Retrieval with Scoring
-// ============================================================================
-
-/**
- * Calculate recency score (0-1, exponential decay)
- * Recent memories get higher scores
- */
+/** Exponential recency decay — half-life 7 days */
 function calculateRecencyScore(timestamp: string): number {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const ageMs = now - then;
-  const ageDays = ageMs / (1000 * 60 * 60 * 24);
-  
-  // Exponential decay: score = e^(-age/halfLife)
-  // halfLife = 7 days (memories lose 50% relevance after 1 week)
-  const halfLife = 7;
-  return Math.exp(-ageDays / halfLife);
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  const ageDays = ageMs / 86_400_000;
+  return Math.exp(-ageDays / 7);
 }
 
-/**
- * Combine semantic similarity, recency, and relevance into a single score
- */
+/** Weighted combination: 60% semantic + 25% recency + 15% relevance */
 function calculateCombinedScore(
   semanticScore: number,
   recencyScore: number,
   relevanceScore: number
 ): number {
-  // Weighted combination:
-  // - Semantic similarity: 60%
-  // - Recency: 25%
-  // - Relevance: 15%
-  return (
-    semanticScore * 0.6 +
-    recencyScore * 0.25 +
-    relevanceScore * 0.15
-  );
+  return semanticScore * 0.60 + recencyScore * 0.25 + relevanceScore * 0.15;
 }
 
-// ============================================================================
-// Main RAG Service
-// ============================================================================
+// ─── Main RAG Service ─────────────────────────────────────────────────────────
 
 export class EnhancedRAGService {
-  private upstashClient: Index | null;
-  
-  constructor() {
-    this.upstashClient = getUpstashClient();
-  }
-  
-  /**
-   * Query all memory sources and return ranked results
-   */
+
+  /** Query all memory sources and return ranked results */
   async query(request: RAGQuery): Promise<RAGResult> {
     const startTime = Date.now();
-    const {
-      query,
-      userId,
-      topK = 10,
-      includeRealWorld = true,
-      minSimilarity = 0.4,
-    } = request;
-    
-    // Parallel retrieval from all sources
-    const [shortTermChunks, longTermChunks, realWorldChunks] = await Promise.all([
+    const { query, userId, topK = 10, includeRealWorld = false, minSimilarity = 0.4 } = request;
+
+    const [shortTermChunks, longTermChunks] = await Promise.all([
       this.queryShortTerm(userId, query, topK, minSimilarity),
       this.queryLongTerm(userId, query, topK),
-      includeRealWorld ? queryRealWorldKnowledge(query) : Promise.resolve([]),
     ]);
-    
-    // Combine and rank all chunks
+
+    // REAL_WORLD is reserved for future MCP tool integration
+    const realWorldChunks: MemoryChunk[] = includeRealWorld ? [] : [];
+
     const allChunks = [...shortTermChunks, ...longTermChunks, ...realWorldChunks];
-    
-    // Calculate combined scores
+
     for (const chunk of allChunks) {
       const recencyScore = calculateRecencyScore(chunk.timestamp);
-      const semanticScore = chunk.metadata.semanticScore || 0.5;
-      const relevanceScore = chunk.metadata.relevanceScore || 0.5;
-      
+      const semanticScore = chunk.metadata.semanticScore ?? 0.5;
+      const relevanceScore = chunk.metadata.relevanceScore ?? 0.5;
       chunk.metadata.recencyScore = recencyScore;
-      chunk.metadata.combinedScore = calculateCombinedScore(
-        semanticScore,
-        recencyScore,
-        relevanceScore
-      );
+      chunk.metadata.combinedScore = calculateCombinedScore(semanticScore, recencyScore, relevanceScore);
     }
-    
-    // Sort by combined score (highest first)
-    allChunks.sort((a, b) => 
-      (b.metadata.combinedScore || 0) - (a.metadata.combinedScore || 0)
-    );
-    
-    // Take top K
-    const topChunks = allChunks.slice(0, topK);
-    
+
+    allChunks.sort((a, b) => (b.metadata.combinedScore ?? 0) - (a.metadata.combinedScore ?? 0));
+
     return {
-      chunks: topChunks,
+      chunks: allChunks.slice(0, topK),
       totalRetrieved: allChunks.length,
       retrievalTimeMs: Date.now() - startTime,
       sources: {
@@ -256,122 +189,135 @@ export class EnhancedRAGService {
       },
     };
   }
-  
-  /**
-   * Query short-term memory (Upstash Vector)
-   */
+
+  /** Query short-term memory via Upstash Vector REST API */
   private async queryShortTerm(
     userId: string,
     query: string,
     topK: number,
     minSimilarity: number
   ): Promise<MemoryChunk[]> {
-    if (!this.upstashClient) return [];
-    
+    if (!isUpstashReady()) return [];
+
     try {
-      // Query Upstash Vector with metadata filtering
-      const results = await this.upstashClient.query({
-        data: query,
-        topK,
-        includeMetadata: true,
-        filter: `user_id = '${userId}'`,
-      });
-      
-      return results
-        .filter(r => r.score >= minSimilarity)
-        .map(r => ({
-          id: r.id as string,
-          content: (r.metadata as any)?.content || '',
+      let payload: any;
+      try {
+        payload = await upstashPost('/query', {
+          data: query,          // Upstash auto-embeds when using data field
+          topK: topK * 2,
+          includeMetadata: true,
+          includeData: true,
+          filter: `user_id = '${userId}'`,
+        });
+      } catch {
+        // Retry without filter (some Upstash plans don't support metadata filters)
+        payload = await upstashPost('/query', {
+          data: query,
+          topK: topK * 4,
+          includeMetadata: true,
+          includeData: true,
+        });
+      }
+
+      const matches: any[] = payload?.result ?? payload?.matches ?? [];
+
+      return matches
+        .filter((m: any) => {
+          const score: number = m.score ?? 0;
+          if (score < minSimilarity) return false;
+          // Client-side user filter when server-side filter wasn't applied
+          const uid = m.metadata?.user_id as string | undefined;
+          return uid === userId || String(m.id).startsWith(`${userId}:`);
+        })
+        .map((m: any) => ({
+          id: String(m.id),
+          content: typeof m.data === 'string' ? m.data : (m.metadata?.text as string | undefined) ?? '',
           type: 'SHORT_TERM' as const,
           userId,
-          timestamp: (r.metadata as any)?.timestamp || new Date().toISOString(),
+          timestamp: (m.metadata?.created_at as string | undefined) ?? new Date().toISOString(),
           metadata: {
             source: 'upstash',
-            semanticScore: r.score,
+            semanticScore: m.score ?? 0,
           },
-        }));
+        }))
+        .filter(c => c.content.length > 0)
+        .slice(0, topK);
     } catch (error) {
-      console.warn('[RAG] Upstash query error:', error);
+      console.warn('[RAG] Upstash short-term query error:', error);
       return [];
     }
   }
-  
-  /**
-   * Query long-term memory (Supabase)
-   */
-  private async queryLongTerm(
-    userId: string,
-    query: string,
-    limit: number
-  ): Promise<MemoryChunk[]> {
+
+  /** Query long-term memory from Supabase */
+  private async queryLongTerm(userId: string, query: string, limit: number): Promise<MemoryChunk[]> {
     return querySupabaseMemories(userId, query, limit);
   }
-  
-  /**
-   * Store a new memory chunk
-   */
+
+  /** Store a new memory chunk */
   async store(chunk: Omit<MemoryChunk, 'id' | 'timestamp'>): Promise<void> {
     const id = `${chunk.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const timestamp = new Date().toISOString();
-    
-    // Store in Upstash Vector for semantic search
-    if (this.upstashClient && chunk.type === 'SHORT_TERM') {
+
+    // Short-term → Upstash Vector
+    if (chunk.type === 'SHORT_TERM' && isUpstashReady()) {
       try {
-        await this.upstashClient.upsert({
-          id,
-          data: chunk.content,
-          metadata: {
-            user_id: chunk.userId,
-            type: chunk.type,
-            category: chunk.category,
-            timestamp,
-            ...chunk.metadata,
-          },
+        await upstashPost('/upsert', {
+          vectors: [{
+            id,
+            data: chunk.content,   // Upstash auto-embeds
+            metadata: {
+              user_id: chunk.userId,
+              type: chunk.type,
+              category: chunk.category ?? 'general',
+              created_at: timestamp,
+              text: chunk.content.slice(0, 1000),
+            },
+          }],
         });
       } catch (error) {
         console.warn('[RAG] Upstash upsert error:', error);
       }
     }
-    
-    // Store long-term memories in Supabase
-    if (chunk.type === 'LONG_TERM') {
-      const supabaseUrl = process.env.SUPABASE_URL;
-      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      
-      if (supabaseUrl && serviceKey) {
-        try {
-          await fetch(`${supabaseUrl}/rest/v1/memories`, {
-            method: 'POST',
-            headers: {
-              'apikey': serviceKey,
-              'Authorization': `Bearer ${serviceKey}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'return=minimal',
-            },
-            body: JSON.stringify({
-              id,
-              user_id: chunk.userId,
-              content: chunk.content,
-              category: chunk.category || 'fact',
-              relevance: chunk.metadata.relevanceScore || 0.5,
-              created_at: timestamp,
-            }),
-            signal: AbortSignal.timeout(5000),
-          });
-        } catch (error) {
-          console.warn('[RAG] Supabase insert error:', error);
-        }
+
+    // Long-term → Supabase
+    if (chunk.type === 'LONG_TERM' && isSupabaseReady()) {
+      const { url, key } = getSupabaseConfig();
+      try {
+        await fetch(`${url}/rest/v1/memories`, {
+          method: 'POST',
+          headers: {
+            apikey: key,
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            id,
+            user_id: chunk.userId,
+            content: chunk.content,
+            embedding: [],
+            category: chunk.category ?? 'FACT',
+            importance: chunk.metadata.relevanceScore ?? 0.5,
+            tags: [],
+            related_ids: [],
+            access_count: 0,
+            created_at: timestamp,
+            last_accessed: timestamp,
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch (error) {
+        console.warn('[RAG] Supabase insert error:', error);
       }
     }
   }
 }
 
-// Singleton
-let ragService: EnhancedRAGService | null = null;
+// ─── Singleton ────────────────────────────────────────────────────────────────
+
+let _ragService: EnhancedRAGService | null = null;
 
 export function getEnhancedRAGService(): EnhancedRAGService {
-  if (!ragService) {
-    ragService = new EnhancedRAGService();
-  }
-  return ragService;
+  if (!_ragService) _ragService = new EnhancedRAGService();
+  return _ragService;
 }
