@@ -284,71 +284,182 @@ async function financeSearch(query: string): Promise<SohamToolResult> {
   const lower = safeQuery.toLowerCase();
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
 
-  // Crypto path (free via CoinGecko)
+  // ── Detect requested fiat currency ────────────────────────────────────────
+  const wantsINR = /\binr\b|rupee|rupees|indian/i.test(lower);
+  const wantsEUR = /\beur\b|euro/i.test(lower);
+  const wantsGBP = /\bgbp\b|pound/i.test(lower);
+  const fiatCurrency = wantsINR ? 'inr' : wantsEUR ? 'eur' : wantsGBP ? 'gbp' : 'usd';
+  const fiatSymbol   = wantsINR ? '₹' : wantsEUR ? '€' : wantsGBP ? '£' : '$';
+
+  // ── Crypto map ────────────────────────────────────────────────────────────
   const cryptoMap: Record<string, string> = {
-    bitcoin: 'bitcoin',
-    btc: 'bitcoin',
-    ethereum: 'ethereum',
-    eth: 'ethereum',
-    solana: 'solana',
-    sol: 'solana',
-    dogecoin: 'dogecoin',
-    doge: 'dogecoin',
+    bitcoin: 'bitcoin', btc: 'bitcoin',
+    ethereum: 'ethereum', eth: 'ethereum',
+    solana: 'solana', sol: 'solana',
+    dogecoin: 'dogecoin', doge: 'dogecoin',
+    ripple: 'ripple', xrp: 'ripple',
+    cardano: 'cardano', ada: 'cardano',
+    bnb: 'binancecoin',
+    usdt: 'tether', tether: 'tether',
   };
 
   const cryptoId = Object.entries(cryptoMap).find(([k]) => lower.includes(k))?.[1];
+
   if (cryptoId) {
+    // ── Source 1: CoinGecko — supports INR/EUR/GBP natively ─────────────────
     try {
-      const data = await fetchJson<Record<string, { usd?: number; usd_24h_change?: number }>>(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(cryptoId)}&vs_currencies=usd&include_24hr_change=true`
+      const data = await fetchJson<Record<string, Record<string, number>>>(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(cryptoId)}&vs_currencies=${fiatCurrency},usd&include_24hr_change=true`,
+        6000
       );
       const quote = data[cryptoId];
-      if (!quote) {
-        return { tool: 'finance_search', query: safeQuery, ok: false, output: `No crypto quote found for ${cryptoId}.` };
+      if (quote) {
+        const price    = quote[fiatCurrency] ?? quote['usd'];
+        const change   = (quote as any)[`${fiatCurrency}_24h_change`] ?? (quote as any)['usd_24h_change'];
+        const sym      = quote[fiatCurrency] != null ? fiatSymbol : '$';
+        const cur      = quote[fiatCurrency] != null ? fiatCurrency.toUpperCase() : 'USD';
+        const formatted = price >= 1000
+          ? price.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+          : price.toFixed(4);
+        return {
+          tool: 'finance_search', query: safeQuery, ok: true,
+          output: `**${cryptoId.toUpperCase()} / ${cur}**: ${sym}${formatted}` +
+            (change != null ? `  (24h: ${change >= 0 ? '+' : ''}${(change as number).toFixed(2)}%)` : '') +
+            `\nSource: CoinGecko · ${new Date().toUTCString()}`,
+        };
       }
-      return {
-        tool: 'finance_search',
-        query: safeQuery,
-        ok: true,
-        output: `${cryptoId.toUpperCase()} price: $${quote.usd ?? 'N/A'} (24h change: ${quote.usd_24h_change?.toFixed(2) ?? 'N/A'}%)`,
-      };
-    } catch (error) {
-      return { tool: 'finance_search', query: safeQuery, ok: false, output: `Crypto lookup failed: ${String(error)}` };
+    } catch (cgErr) {
+      console.warn('[Finance] CoinGecko failed:', String(cgErr).slice(0, 80));
     }
+
+    // ── Source 2: Binance REST (free, no key, high rate limit) ───────────────
+    const binanceMap: Record<string, string> = {
+      bitcoin: 'BTCUSDT', ethereum: 'ETHUSDT', solana: 'SOLUSDT',
+      dogecoin: 'DOGEUSDT', ripple: 'XRPUSDT', cardano: 'ADAUSDT',
+      binancecoin: 'BNBUSDT',
+    };
+    const binancePair = binanceMap[cryptoId];
+    if (binancePair) {
+      try {
+        const ticker = await fetchJson<{ price?: string }>(
+          `https://api.binance.com/api/v3/ticker/price?symbol=${binancePair}`,
+          5000
+        );
+        const usdPrice = parseFloat(ticker.price ?? '0');
+        if (usdPrice > 0) {
+          let finalPrice = usdPrice;
+          let finalSym = '$';
+          let finalCur = 'USD';
+
+          if (fiatCurrency !== 'usd') {
+            try {
+              const fx = await fetchJson<{ rates?: Record<string, number> }>(
+                `https://open.er-api.com/v6/latest/USD`,
+                5000
+              );
+              const rate = fx.rates?.[fiatCurrency.toUpperCase()];
+              if (rate) {
+                finalPrice = usdPrice * rate;
+                finalSym = fiatSymbol;
+                finalCur = fiatCurrency.toUpperCase();
+              }
+            } catch { /* keep USD */ }
+          }
+
+          const formatted = finalPrice >= 1000
+            ? finalPrice.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+            : finalPrice.toFixed(4);
+
+          return {
+            tool: 'finance_search', query: safeQuery, ok: true,
+            output: `**${cryptoId.toUpperCase()} / ${finalCur}**: ${finalSym}${formatted}` +
+              `\nSource: Binance · ${new Date().toUTCString()}`,
+          };
+        }
+      } catch (binErr) {
+        console.warn('[Finance] Binance failed:', String(binErr).slice(0, 80));
+      }
+    }
+
+    // ── Source 3: Tavily web search fallback ──────────────────────────────────
+    const tavilyKey = process.env.TAVILY_API_KEY;
+    if (tavilyKey) {
+      try {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: tavilyKey,
+            query: `${cryptoId} price in ${fiatCurrency.toUpperCase()} today live`,
+            search_depth: 'basic', max_results: 3, include_answer: true,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const data = await res.json() as any;
+          if (data.answer) {
+            return {
+              tool: 'finance_search', query: safeQuery, ok: true,
+              output: `${cryptoId.toUpperCase()} price (web search): ${data.answer}\n⚠ Web search result — verify at coingecko.com`,
+            };
+          }
+        }
+      } catch { /* fall through */ }
+    }
+
+    // All sources failed — honest error, no hallucination
+    return {
+      tool: 'finance_search', query: safeQuery, ok: false,
+      output: `Unable to fetch live ${cryptoId.toUpperCase()} price right now — all sources are temporarily unavailable. Check https://coingecko.com or https://coinmarketcap.com for the latest price.`,
+    };
   }
 
-  // Stock path (Alpha Vantage free tier)
+  // ── Stock path (Alpha Vantage — with fiat conversion) ───────────────────
   const symbolMatch = safeQuery.toUpperCase().match(/\b[A-Z]{1,5}\b/);
   if (symbolMatch && alphaVantageKey) {
     const symbol = symbolMatch[0];
     try {
       const data = await fetchJson<Record<string, Record<string, string>>>(
-        `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(alphaVantageKey)}`
+        `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(alphaVantageKey)}`,
+        8000
       );
       const quote = data['Global Quote'] || {};
-      const price = quote['05. price'];
-      const change = quote['10. change percent'];
-      if (!price) {
+      const priceUSD = parseFloat(quote['05. price'] ?? '0');
+      const change   = quote['10. change percent'] ?? 'N/A';
+      if (!priceUSD) {
         return { tool: 'finance_search', query: safeQuery, ok: false, output: `No stock quote found for ${symbol}.` };
       }
+      let displayPrice = `$${priceUSD.toFixed(2)}`;
+      if (fiatCurrency !== 'usd') {
+        try {
+          const fx = await fetchJson<{ 'Realtime Currency Exchange Rate'?: Record<string, string> }>(
+            `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=USD&to_currency=${fiatCurrency.toUpperCase()}&apikey=${encodeURIComponent(alphaVantageKey)}`,
+            6000
+          );
+          const rate = parseFloat(fx['Realtime Currency Exchange Rate']?.['5. Exchange Rate'] ?? '0');
+          if (rate > 0) {
+            const converted = priceUSD * rate;
+            const formatted = converted >= 100
+              ? converted.toLocaleString('en-IN', { maximumFractionDigits: 2 })
+              : converted.toFixed(4);
+            displayPrice = `${fiatSymbol}${formatted} (${fiatCurrency.toUpperCase()})`;
+          }
+        } catch { /* keep USD */ }
+      }
       return {
-        tool: 'finance_search',
-        query: safeQuery,
-        ok: true,
-        output: `${symbol} price: $${price} (change: ${change || 'N/A'})`,
+        tool: 'finance_search', query: safeQuery, ok: true,
+        output: `**${symbol}**: ${displayPrice}  (change: ${change})\nSource: Alpha Vantage`,
       };
     } catch (error) {
       return { tool: 'finance_search', query: safeQuery, ok: false, output: `Stock lookup failed: ${String(error)}` };
     }
   }
-
-  // Fallback to web search
+  // ── Fallback to web search ────────────────────────────────────────────────
   try {
     const duck = await searchDuckDuckGo(`finance market ${safeQuery}`);
     const top = duck.results.slice(0, 4);
     return {
-      tool: 'finance_search',
-      query: safeQuery,
+      tool: 'finance_search', query: safeQuery,
       ok: top.length > 0,
       output: top.length ? top.map((r, i) => `${i + 1}. ${r.title} - ${r.snippet}`).join('\n') : 'No finance results found.',
       sources: top.filter(r => r.title && r.url).map(r => ({ title: r.title!, url: r.url! })),
