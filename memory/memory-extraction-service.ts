@@ -476,7 +476,9 @@ If nothing important to remember, return: []`,
       'perl', 'haskell', 'elixir', 'clojure', 'f#', 'ocaml', 'erlang', 'julia'
     ];
     languages.forEach(lang => {
-      if (new RegExp(`\\b${lang}\\b`, 'i').test(lower)) tags.push(lang);
+      // Escape special regex characters like + in c++
+      const escapedLang = lang.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${escapedLang}\\b`, 'i').test(lower)) tags.push(lang);
     });
 
     // Frameworks & libraries
@@ -487,7 +489,8 @@ If nothing important to remember, return: []`,
       'pandas', 'numpy', 'matplotlib', 'opencv', 'unity', 'unreal', 'godot'
     ];
     frameworks.forEach(fw => {
-      if (new RegExp(`\\b${fw}\\b`, 'i').test(lower)) tags.push(fw);
+      const escapedFw = fw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${escapedFw}\\b`, 'i').test(lower)) tags.push(fw);
     });
 
     // Databases
@@ -496,7 +499,8 @@ If nothing important to remember, return: []`,
       'dynamodb', 'firestore', 'supabase', 'prisma', 'sequelize', 'typeorm'
     ];
     databases.forEach(db => {
-      if (new RegExp(`\\b${db}\\b`, 'i').test(lower)) tags.push(db);
+      const escapedDb = db.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${escapedDb}\\b`, 'i').test(lower)) tags.push(db);
     });
 
     // DevOps & Cloud

@@ -1,62 +1,46 @@
 /**
- * SOHAM Backend Server — Express Entry Point
- * ─────────────────────────────────────────────
- * Standalone Node.js/Express server for deployment on Render, Railway, Fly.io, etc.
- *
- * All AI intelligence lives here:
- *   POST /api/chat                  → Main chat (full orchestration)
- *   POST /api/chat/personality      → Chat with personality system
- *   POST /api/ai/search             → Web search + AI summarization
- *   POST /api/ai/solve              → Math / problem solver
- *   POST /api/ai/summarize          → Text summarization
- *   POST /api/ai/image-solver       → Solve equations from images
- *   POST /api/ai/pdf-analyzer       → Analyze PDF documents
- *   POST /api/image/generate        → Image generation (CF → Pollinations → HF)
- *   POST /api/image/generate-cf     → Cloudflare Workers AI image only
- *   POST /api/voice/tts             → Text-to-Speech (Groq Orpheus)
- *   POST /api/voice/transcribe      → Speech-to-Text (Groq Whisper)
- *   POST /api/memory/extract        → Extract & store conversation memories
- *   GET  /api/health                → Health check + provider status
- *
- * ─── Skills (v2) ──────────────────────────────────────────────────────────────
- *   POST /api/ai/translate          → Multi-language translation (auto-detect source)
- *   POST /api/ai/sentiment          → Sentiment + emotion analysis
- *   POST /api/ai/classify           → Text classification (custom or auto categories)
- *   POST /api/ai/grammar            → Grammar correction & writing improvement
- *   POST /api/ai/quiz               → Quiz / flashcard generator
- *   POST /api/ai/recipe             → Recipe generator from ingredients / cuisine
- *   POST /api/ai/joke               → Joke / pun / roast / riddle / fun-fact generator
- *   POST /api/ai/dictionary         → Word definitions, synonyms, etymology
- *   POST /api/ai/fact-check         → Fact-checking with web search + AI reasoning
- ──────────────────────────────────────────────────────────────────────────────
+ * SOHAM Backend Server — Production Entry Point
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Production hardening applied:
+ *   ✅ Request ID / correlation ID on every request
+ *   ✅ Security headers (X-Content-Type-Options, CSP, HSTS, etc.)
+ *   ✅ Per-IP rate limiting on all AI endpoints
+ *   ✅ Tightened body size limits (10MB default, 20MB for PDF/image routes)
+ *   ✅ Structured JSON logging (replaces console.log)
+ *   ✅ Graceful shutdown on SIGTERM / SIGINT
+ *   ✅ Global JSON error handler (no HTML 500 pages)
+ *   ✅ 405 Method Not Allowed handler
+ *   ✅ Request timeout (60s default, 120s for heavy routes)
+ *   ✅ Unhandled rejection / uncaught exception handlers
+ *   ✅ SOHAM_API_KEY required — no hardcoded fallback
  */
 
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as http from 'http';
 
-// Load .env from either the source root or the compiled dist directory.
+// ── Load env before anything else ─────────────────────────────────────────────
 const envCandidates = [
   path.resolve(__dirname, '.env'),
   path.resolve(__dirname, '.env.local'),
   path.resolve(__dirname, '..', '.env'),
   path.resolve(__dirname, '..', '.env.local'),
 ];
-
-const loadedEnvPath = envCandidates.find(candidate => fs.existsSync(candidate));
-
+const loadedEnvPath = envCandidates.find(c => fs.existsSync(c));
 if (loadedEnvPath) {
-  if (loadedEnvPath.endsWith('.env.local') && !loadedEnvPath.includes(`${path.sep}dist${path.sep}`)) {
-    console.log('📝 .env not found, loading from .env.local');
-  }
   dotenv.config({ path: loadedEnvPath });
 } else {
-  console.warn('⚠️ No .env or .env.local found! Providers may fail.');
+  process.stderr.write('⚠️  No .env or .env.local found — providers may fail.\n');
 }
 
-import express from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
-import { json } from 'express';
+import { json, urlencoded } from 'express';
+import { logger } from './utils/logger';
+import { requestIdMiddleware } from './middleware/request-id';
+import { securityHeadersMiddleware } from './middleware/security-headers';
+import { rateLimitMiddleware } from './middleware/rate-limit';
 
 // ── Route handlers ─────────────────────────────────────────────────────────────
 import { chatHandler } from './routes/chat';
@@ -79,7 +63,6 @@ import {
   storeSuggestionHandler,
 } from './routes/memory/knowledge';
 import { healthHandler } from './routes/health';
-// ── Skills v2 ──────────────────────────────────────────────────────────────────
 import { translateHandler } from './routes/ai/translate';
 import { sentimentHandler } from './routes/ai/sentiment';
 import { classifyHandler } from './routes/ai/classify';
@@ -90,154 +73,207 @@ import { jokeHandler } from './routes/ai/joke';
 import { dictionaryHandler } from './routes/ai/dictionary';
 import { factCheckHandler } from './routes/ai/fact-check';
 
-const app = express();
-const PORT = process.env.PORT || 8080;
+// ── Config ─────────────────────────────────────────────────────────────────────
+const PORT        = parseInt(process.env.PORT ?? '8080', 10);
+const isProd      = process.env.NODE_ENV === 'production';
+const SOHAM_API_KEY = process.env.SOHAM_API_KEY;
 
-// Build the allowed-origins set at startup.
-// Always include the server's own Render URL so internal requests never get blocked.
+if (!SOHAM_API_KEY) {
+  const msg = 'SOHAM_API_KEY is not set — all /api requests will be rejected.';
+  isProd ? logger.error(msg) : logger.warn(msg);
+}
+
+// ── CORS origins ───────────────────────────────────────────────────────────────
 const allowedOrigins = new Set(
-  (process.env.ALLOWED_ORIGINS || '')
+  (process.env.ALLOWED_ORIGINS ?? '')
     .split(',')
     .map(o => o.trim())
     .filter(Boolean)
 );
-
-// Auto-add the Render service URL so the server never blocks itself.
-// RENDER_EXTERNAL_URL is injected automatically by Render at runtime.
 if (process.env.RENDER_EXTERNAL_URL) {
   allowedOrigins.add(process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ''));
 }
 
+// ── Timeout helper ─────────────────────────────────────────────────────────────
+/**
+ * Wraps a route handler with a hard timeout.
+ * If the handler doesn't respond within `ms`, returns 504.
+ */
+function withTimeout(handler: express.RequestHandler, ms: number): express.RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const timer = setTimeout(() => {
+      if (!res.headersSent) {
+        logger.warn('Request timeout', { path: req.path, ms, requestId: req.requestId });
+        res.status(504).json({
+          error: 'GATEWAY_TIMEOUT',
+          message: `Request timed out after ${ms / 1000}s. Please try again.`,
+          requestId: req.requestId,
+        });
+      }
+    }, ms);
+
+    // Clear timer when response finishes
+    res.on('finish', () => clearTimeout(timer));
+    res.on('close',  () => clearTimeout(timer));
+
+    handler(req, res, next);
+  };
+}
+
+// ── App ────────────────────────────────────────────────────────────────────────
+const app = express();
 app.set('trust proxy', 1);
+app.disable('x-powered-by'); // Don't advertise Express
+
+// ── Global middleware ──────────────────────────────────────────────────────────
+app.use(requestIdMiddleware);
+app.use(securityHeadersMiddleware);
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: (origin, callback) => {
-    // No origin = same-origin request, server-to-server, curl, Postman → allow
-    if (!origin) {
+    if (!origin || allowedOrigins.size === 0 || allowedOrigins.has(origin)) {
       callback(null, true);
-      return;
+    } else {
+      logger.warn('CORS blocked', { origin });
+      callback(null, false);
     }
-    // No whitelist configured → allow all (open API mode)
-    if (allowedOrigins.size === 0) {
-      callback(null, true);
-      return;
-    }
-    if (allowedOrigins.has(origin)) {
-      callback(null, true);
-      return;
-    }
-    // Blocked — return null (not an Error) so Express doesn't throw a 500.
-    // The cors package will send a 403 with no Access-Control-Allow-Origin header.
-    console.warn(`[CORS] Blocked origin: ${origin}`);
-    callback(null, false);
   },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  exposedHeaders: ['X-Request-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
   credentials: true,
 }));
-app.use(json({ limit: '50mb' })); // Large limit for PDF/image uploads
 
-// ── Security Middleware ────────────────────────────────────────────────────────
-const SOHAM_API_KEY = process.env.SOHAM_API_KEY;
-if (!SOHAM_API_KEY) {
-  if (process.env.NODE_ENV === 'production') {
-    console.error('🚨 FATAL: SOHAM_API_KEY environment variable is not set. Server will reject all API requests.');
-  } else {
-    console.warn('⚠️  SOHAM_API_KEY not set — all /api requests will be rejected. Set it in .env');
-  }
-}
+// ── Body parsers — tight limits by default ─────────────────────────────────────
+// PDF/image routes override this with a larger limit via their own middleware
+app.use((req, res, next) => {
+  const heavyRoutes = ['/api/ai/pdf-analyzer', '/api/ai/image-solver', '/api/image/'];
+  const isHeavy = heavyRoutes.some(r => req.path.startsWith(r));
+  json({ limit: isHeavy ? '20mb' : '1mb' })(req, res, next);
+});
+app.use(urlencoded({ extended: false, limit: '1mb' }));
 
-app.use('/api', (req, res, next) => {
-  // Allow health check without API key for monitoring uptime
-  // req.path is relative to the mount point '/api'
-  if (req.path === '/health' || req.path === '/health/') {
-    return next();
-  }
+// ── Request logging ────────────────────────────────────────────────────────────
+app.use((req, _res, next) => {
+  logger.info('→ request', {
+    method: req.method,
+    path: req.path,
+    ip: req.ip,
+    requestId: req.requestId,
+  });
+  next();
+});
+
+// ── Auth middleware ────────────────────────────────────────────────────────────
+app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+  if (req.path === '/health' || req.path === '/health/') return next();
 
   const authHeader = req.headers.authorization;
   if (!SOHAM_API_KEY || !authHeader || authHeader !== `Bearer ${SOHAM_API_KEY}`) {
-    console.warn(`🚨 [Security] Unauthorized ${req.method} attempt to ${req.originalUrl} from ${req.ip}`);
-    return res.status(401).json({
-      error: 'UNAUTHORIZED',
-      message: 'Missing or invalid API key in Authorization header. Use "Authorization: Bearer <YOUR_SOHAM_API_KEY>"',
+    logger.warn('Unauthorized request', {
+      method: req.method,
+      path: req.originalUrl,
+      ip: req.ip,
+      requestId: req.requestId,
     });
+    res.status(401).json({
+      error: 'UNAUTHORIZED',
+      message: 'Missing or invalid API key. Use "Authorization: Bearer <YOUR_SOHAM_API_KEY>"',
+      requestId: req.requestId,
+    });
+    return;
   }
   next();
 });
 
-// ── Health ─────────────────────────────────────────────────────────────────────
+// ── Rate limiting on all /api routes ──────────────────────────────────────────
+app.use('/api', rateLimitMiddleware);
+
+// ── Root ───────────────────────────────────────────────────────────────────────
 app.get('/', (_req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'soham-backend-server',
-    health: '/api/health',
-  });
+  res.json({ status: 'ok', service: 'soham-backend-server', health: '/api/health' });
 });
 
+// ── Health (no auth, no rate limit, no timeout) ────────────────────────────────
 app.get('/api/health', healthHandler);
 
-// ── Chat ───────────────────────────────────────────────────────────────────────
-app.post('/api/chat', chatHandler);
-app.post('/api/chat/personality', chatPersonalityHandler);
+// ── Chat (60s timeout) ─────────────────────────────────────────────────────────
+app.post('/api/chat',             withTimeout(chatHandler,            60_000));
+app.post('/api/chat/personality', withTimeout(chatPersonalityHandler, 60_000));
 
-// ── AI Tools ───────────────────────────────────────────────────────────────────
-app.post('/api/ai/search', searchHandler);
-app.post('/api/ai/solve', solveHandler);
-app.post('/api/ai/summarize', summarizeHandler);
-app.post('/api/ai/image-solver', imageSolverHandler);
-app.post('/api/ai/pdf-analyzer', pdfAnalyzerHandler);
+// ── AI Tools (60s timeout) ────────────────────────────────────────────────────
+app.post('/api/ai/search',       withTimeout(searchHandler,      60_000));
+app.post('/api/ai/solve',        withTimeout(solveHandler,       60_000));
+app.post('/api/ai/summarize',    withTimeout(summarizeHandler,   60_000));
+app.post('/api/ai/translate',    withTimeout(translateHandler,   30_000));
+app.post('/api/ai/sentiment',    withTimeout(sentimentHandler,   30_000));
+app.post('/api/ai/classify',     withTimeout(classifyHandler,    30_000));
+app.post('/api/ai/grammar',      withTimeout(grammarHandler,     30_000));
+app.post('/api/ai/quiz',         withTimeout(quizHandler,        45_000));
+app.post('/api/ai/recipe',       withTimeout(recipeHandler,      45_000));
+app.post('/api/ai/joke',         withTimeout(jokeHandler,        20_000));
+app.post('/api/ai/dictionary',   withTimeout(dictionaryHandler,  20_000));
+app.post('/api/ai/fact-check',   withTimeout(factCheckHandler,   60_000));
 
-// ── Image Generation ───────────────────────────────────────────────────────────
-app.post('/api/image/generate', generateImageHandler);
-app.post('/api/image/generate-cf', generateImageCFHandler);
+// ── Heavy routes (120s timeout — PDF/image processing) ────────────────────────
+app.post('/api/ai/image-solver', withTimeout(imageSolverHandler,  120_000));
+app.post('/api/ai/pdf-analyzer', withTimeout(pdfAnalyzerHandler,  120_000));
 
-// ── Voice ──────────────────────────────────────────────────────────────────────
-app.post('/api/voice/tts', ttsHandler);
-app.post('/api/voice/transcribe', transcribeHandler);
+// ── Image Generation (90s timeout) ────────────────────────────────────────────
+app.post('/api/image/generate',    withTimeout(generateImageHandler,   90_000));
+app.post('/api/image/generate-cf', withTimeout(generateImageCFHandler, 90_000));
 
-// ── Memory ─────────────────────────────────────────────────────────────────────
-app.post('/api/memory/extract', extractMemoriesHandler);
+// ── Voice (60s timeout) ───────────────────────────────────────────────────────
+app.post('/api/voice/tts',        withTimeout(ttsHandler,        60_000));
+app.post('/api/voice/transcribe', withTimeout(transcribeHandler, 60_000));
 
-// ── User Profile ───────────────────────────────────────────────────────────────
-app.get('/api/memory/profile/:userId', getProfileHandler);
-app.post('/api/memory/profile/:userId', upsertProfileHandler);
-app.delete('/api/memory/profile/:userId', deleteProfileHandler);
+// ── Memory ────────────────────────────────────────────────────────────────────
+app.post('/api/memory/extract',                extractMemoriesHandler);
+app.get('/api/memory/profile/:userId',         getProfileHandler);
+app.post('/api/memory/profile/:userId',        upsertProfileHandler);
+app.delete('/api/memory/profile/:userId',      deleteProfileHandler);
+app.post('/api/memory/knowledge',              storeKnowledgeHandler);
+app.post('/api/memory/knowledge/search',       searchKnowledgeHandler);
+app.post('/api/memory/knowledge/correction',   storeCorrectionHandler);
+app.post('/api/memory/knowledge/suggestion',   storeSuggestionHandler);
 
-// ── Public Knowledge (Upstash Vector) ─────────────────────────────────────────
-app.post('/api/memory/knowledge', storeKnowledgeHandler);
-app.post('/api/memory/knowledge/search', searchKnowledgeHandler);
-app.post('/api/memory/knowledge/correction', storeCorrectionHandler);
-app.post('/api/memory/knowledge/suggestion', storeSuggestionHandler);
+// ── 405 Method Not Allowed ────────────────────────────────────────────────────
+// Catches requests to known paths with the wrong HTTP method
+const knownPaths = new Set([
+  '/api/health', '/api/chat', '/api/chat/personality',
+  '/api/ai/search', '/api/ai/solve', '/api/ai/summarize',
+  '/api/ai/image-solver', '/api/ai/pdf-analyzer',
+  '/api/ai/translate', '/api/ai/sentiment', '/api/ai/classify',
+  '/api/ai/grammar', '/api/ai/quiz', '/api/ai/recipe',
+  '/api/ai/joke', '/api/ai/dictionary', '/api/ai/fact-check',
+  '/api/image/generate', '/api/image/generate-cf',
+  '/api/voice/tts', '/api/voice/transcribe',
+  '/api/memory/extract', '/api/memory/knowledge',
+  '/api/memory/knowledge/search', '/api/memory/knowledge/correction',
+  '/api/memory/knowledge/suggestion',
+]);
 
-// ── Skills v2 ──────────────────────────────────────────────────────────────────
-app.post('/api/ai/translate', translateHandler);
-app.post('/api/ai/sentiment', sentimentHandler);
-app.post('/api/ai/classify', classifyHandler);
-app.post('/api/ai/grammar', grammarHandler);
-app.post('/api/ai/quiz', quizHandler);
-app.post('/api/ai/recipe', recipeHandler);
-app.post('/api/ai/joke', jokeHandler);
-app.post('/api/ai/dictionary', dictionaryHandler);
-app.post('/api/ai/fact-check', factCheckHandler);
+app.use((req: Request, res: Response, next: NextFunction) => {
+  // Strip dynamic segments like :userId for matching
+  const staticPath = req.path.replace(/\/[^/]+$/, '/:id');
+  if (knownPaths.has(req.path) || knownPaths.has(staticPath)) {
+    res.status(405).json({
+      error: 'METHOD_NOT_ALLOWED',
+      message: `${req.method} is not allowed on ${req.path}`,
+      requestId: req.requestId,
+    });
+    return;
+  }
+  next();
+});
 
-// app.post('/api/ai/agent', agentHandler);
-
-// ── Future Expansion Slots (uncomment when ready) ─────────────────────────────
-// app.post('/api/ai/code-executor', codeExecutorHandler);
-// app.post('/api/ai/multi-agent', multiAgentHandler);
-// app.post('/api/ai/vision', visionHandler);
-// app.post('/api/ai/data-analyzer', dataAnalyzerHandler);
-// app.post('/api/voice/clone', voiceCloneHandler);
-// app.post('/api/ai/embeddings', embeddingsHandler);
-// app.post('/api/ai/rag', ragHandler);
-// app.post('/api/ai/agent', agentHandler);
-
-// ── 404 fallback ───────────────────────────────────────────────────────────────
-app.use((req, res) => {
+// ── 404 fallback ──────────────────────────────────────────────────────────────
+app.use((req: Request, res: Response) => {
   res.status(404).json({
     error: 'NOT_FOUND',
     message: `Endpoint ${req.method} ${req.path} not found`,
+    requestId: req.requestId,
     availableEndpoints: [
       'GET  /api/health',
       'POST /api/chat',
@@ -272,28 +308,76 @@ app.use((req, res) => {
   });
 });
 
-// ── Global error handler (must be last, after all routes) ─────────────────────
-// Catches any unhandled errors thrown inside route handlers and returns JSON
-// instead of Express's default HTML error page.
-app.use((err: unknown, req: import('express').Request, res: import('express').Response, _next: import('express').NextFunction) => {
+// ── Global error handler ──────────────────────────────────────────────────────
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   const message = err instanceof Error ? err.message : String(err);
-  const stack   = err instanceof Error ? err.stack   : undefined;
-  console.error(`[Global Error Handler] ${req.method} ${req.path}:`, message);
-  if (stack) console.error(stack);
-  res.status(500).json({
-    success: false,
-    error: 'INTERNAL_ERROR',
-    message,
+  logger.error('Unhandled route error', {
     path: req.path,
-    timestamp: new Date().toISOString(),
+    method: req.method,
+    requestId: req.requestId,
+    error: message,
+    // Only include stack in development
+    ...(isProd ? {} : { stack: err instanceof Error ? err.stack : undefined }),
+  });
+
+  if (!res.headersSent) {
+    res.status(500).json({
+      error: 'INTERNAL_ERROR',
+      // Never leak internal error details in production
+      message: isProd ? 'An internal error occurred. Please try again.' : message,
+      requestId: req.requestId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// ── Process-level error handlers ──────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception', { error: err.message, stack: err.stack });
+  // Give the logger time to flush, then exit
+  setTimeout(() => process.exit(1), 500);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+  });
+  // Don't exit — log and continue
+});
+
+// ── Start server ──────────────────────────────────────────────────────────────
+const server = http.createServer(app);
+
+server.listen(PORT, () => {
+  logger.info('SOHAM backend started', {
+    port: PORT,
+    env: process.env.NODE_ENV ?? 'development',
+    apiKeySet: !!SOHAM_API_KEY,
+    allowedOrigins: allowedOrigins.size > 0 ? [...allowedOrigins] : ['*'],
   });
 });
 
-// ── Start ──────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🚀 SOHAM Backend Server running on port ${PORT}`);
-  console.log(`   Health: http://localhost:${PORT}/api/health`);
-  console.log(`   Chat:   http://localhost:${PORT}/api/chat`);
-});
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+function gracefulShutdown(signal: string): void {
+  logger.info(`${signal} received — shutting down gracefully`);
+
+  server.close((err) => {
+    if (err) {
+      logger.error('Error during shutdown', { error: err.message });
+      process.exit(1);
+    }
+    logger.info('Server closed — process exiting');
+    process.exit(0);
+  });
+
+  // Force exit after 15s if connections don't drain
+  setTimeout(() => {
+    logger.error('Forced shutdown after 15s timeout');
+    process.exit(1);
+  }, 15_000).unref();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 
 export default app;
