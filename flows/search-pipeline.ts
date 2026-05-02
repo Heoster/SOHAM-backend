@@ -30,6 +30,7 @@
 
 import { runSearchPipeline, type SearchResult, type QueryType } from '../tools/search-engine';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
+import { withDateTime } from '../memory/realtime-knowledge-service';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -114,8 +115,6 @@ Rules:
 - For news queries, summarize the key facts from multiple sources
 - For factual queries, be precise and cite the most authoritative source first`;
 
-// ─── Step 6: Citation Builder ─────────────────────────────────────────────────
-
 function buildCitationBlock(results: SearchResult[]): string {
   if (results.length === 0) return '';
   const lines = ['\n\n**Sources:**'];
@@ -151,7 +150,7 @@ export async function runFullSearchPipeline(input: SearchPipelineInput): Promise
   try {
     const aiResult = await generateWithSmartFallback({
       prompt: synthesisPrompt,
-      systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
+      systemPrompt: withDateTime(SYNTHESIS_SYSTEM_PROMPT),
       preferredModelId: preferredModel,
       category: 'general',
       params: {

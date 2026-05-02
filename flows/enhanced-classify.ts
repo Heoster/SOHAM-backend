@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const ClassifyInputSchema = z.object({
   text: z.string().min(1).max(10000),
@@ -61,7 +63,7 @@ Sort allCategories by confidence descending. Include top 3 even for single-label
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.1, maxOutputTokens: 1024 },

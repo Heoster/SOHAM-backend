@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const RecipeInputSchema = z.object({
   query: z.string().min(1).max(500),
@@ -79,7 +81,7 @@ Respond with ONLY this JSON:
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.7, maxOutputTokens: 4096 },

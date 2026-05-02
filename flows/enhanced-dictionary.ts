@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const DictionaryInputSchema = z.object({
   word: z.string().min(1).max(100),
@@ -67,7 +69,7 @@ Provide up to 5 definitions, 8 synonyms, 5 antonyms, and 5 related words.`;
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.2, maxOutputTokens: 2048 },

@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const GrammarInputSchema = z.object({
   text: z.string().min(1).max(10000),
@@ -71,7 +73,7 @@ List up to 10 most important changes.`;
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.2, maxOutputTokens: 4096 },

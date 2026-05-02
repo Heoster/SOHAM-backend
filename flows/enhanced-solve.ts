@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
 
 const EnhancedSolveInputSchema = z.object({
   problem: z.string().describe('The problem or quiz to solve.'),
@@ -49,7 +50,7 @@ export async function enhancedSolve(input: EnhancedSolveInput): Promise<Enhanced
   try {
     const response = await generateWithFallback({
       prompt,
-      systemPrompt,
+      systemPrompt: withDateTime(systemPrompt),
       preferredModelId: input.preferredModel,
       category: 'math',
       params: {

@@ -7,6 +7,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const EnhancedImageSolverInputSchema = z.object({
   imageDataUri: z.string().describe('Image data URI (up to 5MB).'),
@@ -95,7 +97,7 @@ export async function enhancedImageSolver(input: EnhancedImageSolverInput): Prom
     // For image analysis, prefer multimodal models
     const response = await generateWithFallback({
       prompt: `${prompt}\n\nImage: ${input.imageDataUri}`,
-      systemPrompt,
+      systemPrompt: withDateTime(systemPrompt),
       preferredModelId: input.preferredModel,
       category: 'multimodal',
       params: {

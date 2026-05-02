@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { searchDuckDuckGo, formatResultsForAI } from '../tools/duckduckgo';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
 
 const EnhancedSearchInputSchema = z.object({
   query: z.string().describe('The search query.'),
@@ -64,7 +65,7 @@ export async function enhancedSearch(input: EnhancedSearchInput): Promise<Enhanc
   try {
     const response = await generateWithFallback({
       prompt,
-      systemPrompt,
+      systemPrompt: withDateTime(systemPrompt),
       preferredModelId: input.preferredModel,
       category: 'general',
       params: {

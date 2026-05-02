@@ -7,6 +7,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const EnhancedPdfAnalyzerInputSchema = z.object({
   pdfDataUri: z.string().describe('PDF data URI (up to 5MB).'),
@@ -93,7 +95,7 @@ export async function enhancedPdfAnalyzer(input: EnhancedPdfAnalyzerInput): Prom
   try {
     const response = await generateWithFallback({
       prompt,
-      systemPrompt,
+      systemPrompt: withDateTime(systemPrompt),
       preferredModelId: input.preferredModel,
       category: 'multimodal',
       params: {

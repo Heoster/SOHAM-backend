@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const JokeInputSchema = z.object({
   topic: z.string().optional().default('anything'),
@@ -62,7 +64,7 @@ Respond with ONLY this JSON:
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.9, maxOutputTokens: 2048 },

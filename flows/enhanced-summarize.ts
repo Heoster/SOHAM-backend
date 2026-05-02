@@ -6,6 +6,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const EnhancedSummarizeInputSchema = z.object({
   text: z.string().describe('The text to summarize.'),
@@ -58,7 +60,7 @@ ${getStyleInstructions(input.style)}
   try {
     const response = await generateWithFallback({
       prompt,
-      systemPrompt,
+      systemPrompt: withDateTime(systemPrompt),
       preferredModelId: input.preferredModel,
       category: 'general',
       params: {

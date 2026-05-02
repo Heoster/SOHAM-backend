@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
 import { searchDuckDuckGo } from '../tools/duckduckgo';
+import { withDateTime } from '../memory/realtime-knowledge-service';
 
 const FactCheckInputSchema = z.object({
   claim: z.string().min(1).max(2000),
@@ -72,7 +73,7 @@ Be objective and cite specific evidence. Include 3-5 evidence points.`;
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.2, maxOutputTokens: 2048 },

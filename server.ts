@@ -139,7 +139,14 @@ app.use(cors({
 app.use(json({ limit: '50mb' })); // Large limit for PDF/image uploads
 
 // ── Security Middleware ────────────────────────────────────────────────────────
-const SOHAM_API_KEY = process.env.SOHAM_API_KEY || 'soham-secret-key-2025';
+const SOHAM_API_KEY = process.env.SOHAM_API_KEY;
+if (!SOHAM_API_KEY) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('🚨 FATAL: SOHAM_API_KEY environment variable is not set. Server will reject all API requests.');
+  } else {
+    console.warn('⚠️  SOHAM_API_KEY not set — all /api requests will be rejected. Set it in .env');
+  }
+}
 
 app.use('/api', (req, res, next) => {
   // Allow health check without API key for monitoring uptime
@@ -149,7 +156,7 @@ app.use('/api', (req, res, next) => {
   }
 
   const authHeader = req.headers.authorization;
-  if (!authHeader || authHeader !== `Bearer ${SOHAM_API_KEY}`) {
+  if (!SOHAM_API_KEY || !authHeader || authHeader !== `Bearer ${SOHAM_API_KEY}`) {
     console.warn(`🚨 [Security] Unauthorized ${req.method} attempt to ${req.originalUrl} from ${req.ip}`);
     return res.status(401).json({
       error: 'UNAUTHORIZED',

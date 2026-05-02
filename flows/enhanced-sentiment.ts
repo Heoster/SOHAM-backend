@@ -5,6 +5,8 @@
 
 import { z } from 'zod';
 import { generateWithFallback } from '../routing/multi-provider-router';
+import { withDateTime } from '../memory/realtime-knowledge-service';
+
 
 const SentimentInputSchema = z.object({
   text: z.string().min(1).max(10000),
@@ -56,7 +58,7 @@ Include 3-5 emotions. Be precise with scores.`;
 
   const response = await generateWithFallback({
     prompt,
-    systemPrompt,
+    systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
     params: { temperature: 0.1, maxOutputTokens: 1024 },

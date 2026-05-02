@@ -78,6 +78,21 @@ export function buildDateTimePromptLine(ctx: DateTimeContext): string {
   return `Current date and time: ${ctx.utc}${ctx.local ? ` (${ctx.local})` : ''}`;
 }
 
+/**
+ * Prepend the current date/time as the very first line of any system prompt.
+ * Use this in every flow and route that calls an AI model.
+ *
+ * Example output:
+ *   TODAY: Saturday, 03 May 2026 — 09:15 UTC
+ *
+ *   You are an expert fact-checker...
+ */
+export function withDateTime(systemPrompt: string): string {
+  const dt = getCurrentDateTimeContext();
+  const line = `TODAY: ${dt.dayOfWeek}, ${dt.date} — ${dt.time}`;
+  return `${line}\n\n${systemPrompt}`;
+}
+
 // ─── Upstash helpers ──────────────────────────────────────────────────────────
 
 function getUpstash() {
