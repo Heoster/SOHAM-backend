@@ -74,32 +74,47 @@ function isCriticalFailure(error: unknown): boolean {
 }
 
 /**
- * Get fallback models for a given category
- * Priority order: Groq (fastest) → Cerebras → Google → HuggingFace → OpenRouter
+ * Get fallback models for a given category.
+ * Rotates across ALL providers so every model gets used over time.
+ * Priority order within each provider: highest priority number first.
  */
 function getFallbackModels(category: ModelCategory): ModelConfig[] {
   const registry = getModelRegistry();
-  const allModels = registry.getAvailableModels();
-  
-  // Provider priority: fastest/most reliable first
-  const providerPriority = ['groq', 'cerebras', 'google', 'huggingface', 'openrouter'];
-  
-  // Get models for the requested category
-  const categoryModels = registry.getModelsByCategory(category);
-  
-  const sortByProvider = (models: ModelConfig[]) =>
-    models.sort((a, b) => {
-      const aPriority = providerPriority.indexOf(a.provider);
-      const bPriority = providerPriority.indexOf(b.provider);
-      return aPriority - bPriority;
-    });
 
-  if (categoryModels.length > 0) {
-    return sortByProvider(categoryModels);
+  // Provider rotation order — spread load across all providers
+  // Each provider gets a slot so Auto mode genuinely uses all of them
+  const providerOrder = ['cerebras', 'groq', 'google', 'huggingface', 'openrouter'];
+
+  const categoryModels = registry.getModelsByCategory(category);
+  const allModels = registry.getAvailableModels();
+
+  const pool = categoryModels.length > 0 ? categoryModels : allModels;
+
+  // Group by provider, sort each group by model id (stable order from registry)
+  const byProvider = new Map<string, ModelConfig[]>();
+  for (const m of pool) {
+    if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+    byProvider.get(m.provider)!.push(m);
   }
-  
-  // No models in category — fall back to all available, sorted by provider priority
-  return sortByProvider([...allModels]);
+
+  // Interleave: take the top model from each provider in rotation order
+  // This ensures Auto mode cycles through Cerebras → Groq → Google → HF → OpenRouter
+  const result: ModelConfig[] = [];
+  const maxPerProvider = 3;
+
+  for (let slot = 0; slot < maxPerProvider; slot++) {
+    for (const provider of providerOrder) {
+      const models = byProvider.get(provider) ?? [];
+      if (models[slot]) result.push(models[slot]);
+    }
+  }
+
+  // Append any remaining models not yet included
+  for (const m of pool) {
+    if (!result.find(r => r.id === m.id)) result.push(m);
+  }
+
+  return result;
 }
 
 /**

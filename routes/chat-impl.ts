@@ -25,18 +25,19 @@ const SOHAM_BASE_PROMPT = `You are SOHAM, an intelligent and versatile assistant
 
 ${buildDeveloperIdentityPrompt()}
 
-RESPONSE FORMATTING RULES:
-- NEVER use # or ## or ### markdown headers
-- Use **bold** for emphasis, bullet points for lists, code blocks for code
-- Keep responses conversational — paragraphs and bullets only
+RESPONSE STYLE — FOLLOW STRICTLY:
+- Keep every response as short and direct as possible. No padding, no filler.
+- Use 1–4 emojis per response naturally — not forced, placed where they add warmth or clarity.
+- NEVER use # or ## or ### markdown headers — they render as raw text in chat.
+- Use **bold** for key terms, bullet points for lists, code blocks for code.
+- Paragraphs only when explanation genuinely needs it. Otherwise: bullets or one-liners.
+- Match the user's energy — casual question = casual answer, technical question = precise answer.
 
-RESPONSE GUIDELINES:
-1. Be Accurate: If unsure, say so. Don't fabricate.
-2. Be Concise: Get to the point.
-3. Stay Focused: Address the actual question directly.
-4. For code: Always specify the language in code blocks.
-5. For math: Show step-by-step working.
-6. Use memory context naturally — don't announce that you're using it.`;
+ACCURACY:
+- If unsure, say so. Never fabricate facts.
+- For code: always specify the language in code blocks.
+- For math: show step-by-step working concisely.
+- Use memory context naturally — never announce you're using it.`;
 
 /**
  * Build the full system prompt with live date/time injected at the top.
@@ -66,18 +67,18 @@ ${getTechnicalInstructions(technicalLevel)}`;
 
 function getToneInstructions(tone: string): string {
   switch (tone) {
-    case 'formal':   return 'Use professional language, proper grammar, and a respectful tone.';
-    case 'casual':   return 'Be friendly and conversational. Use simple language and contractions.';
-    case 'technical':return 'Be precise and technical. Prefer exact terminology over analogies.';
-    default:         return 'Be warm, approachable, and supportive. Balance professionalism with friendliness.';
+    case 'formal':    return 'Professional and respectful. Still concise — no unnecessary padding.';
+    case 'casual':    return 'Friendly and conversational. Short sentences, contractions, natural emojis.';
+    case 'technical': return 'Precise and technical. Exact terminology, no analogies unless asked.';
+    default:          return 'Warm and approachable. Get to the point quickly. 1–4 emojis per response.';
   }
 }
 
 function getTechnicalInstructions(level: string): string {
   switch (level) {
-    case 'beginner': return 'Explain concepts in simple terms. Avoid jargon and use analogies.';
-    case 'expert':   return 'Use technical terminology freely. Provide in-depth explanations.';
-    default:         return 'Balance technical accuracy with accessibility. Define specialized terms when first used.';
+    case 'beginner': return 'Simple terms, no jargon. One analogy max. Keep it short.';
+    case 'expert':   return 'Technical terminology freely. Dense, precise, no hand-holding.';
+    default:         return 'Balance accuracy with accessibility. Define jargon only on first use.';
   }
 }
 
@@ -111,7 +112,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     const intentDetector = getIntentDetector();
     const intent = intentDetector.detect(message, convertedHistory);
 
-    if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.7) {
+    if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6) {
       try {
         const pipeline = getSOHAMPipeline();
         const imageResult = await pipeline.generate({
@@ -122,19 +123,8 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
         const responseTime = Date.now() - startTime;
 
         // Build text-only content — image is passed separately via imageUrl field
-        // NEVER embed base64 data URLs in markdown (they get mangled by the parser)
-        const providerLabel = imageResult.provider === 'cloudflare'
-          ? 'Cloudflare Workers AI'
-          : imageResult.provider === 'pollinations'
-          ? 'Pollinations.ai'
-          : 'HuggingFace';
-
-        const content = [
-          `Here's your generated image!`,
-          ``,
-          `**Prompt:** ${imageResult.enhancedPrompt}`,
-          `**Provider:** ${providerLabel} · **Model:** ${imageResult.model} · **Time:** ${imageResult.generationTime}ms`,
-        ].join('\n');
+        // Clean, minimal response — no model/prompt metadata shown to user
+        const content = `✨ Here's your image!`;
 
         persistSohamMemory({ userId, userMessage: message, assistantMessage: `[Image generated: ${imageResult.enhancedPrompt}]` }).catch(() => {});
 
@@ -164,8 +154,25 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     // ── Build orchestrated prompt (tools + RAG + memory) ────────────────────
     const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });
 
-    // ── Determine preferred model ───────────────────────────────────────────
+    // ── Determine preferred model + category from intent ────────────────────
     const preferredModelId = settings.model && settings.model !== 'auto' ? settings.model : undefined;
+
+    // Map intent → model category so Auto mode picks the right specialist
+    const intentCategoryMap: Record<string, string> = {
+      CODE_GENERATION: 'coding',
+      EXPLANATION:     'general',
+      TRANSLATION:     'general',
+      SENTIMENT_ANALYSIS: 'general',
+      GRAMMAR_CHECK:   'general',
+      QUIZ_GENERATION: 'general',
+      RECIPE:          'general',
+      JOKE:            'general',
+      DICTIONARY:      'general',
+      FACT_CHECK:      'general',
+      WEB_SEARCH:      'general',
+      CHAT:            'general',
+    };
+    const routingCategory = (intentCategoryMap[intent.intent] ?? 'general') as any;
 
     // ── Generate with smart fallback ────────────────────────────────────────
     const result = await generateWithSmartFallback({
@@ -173,7 +180,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       systemPrompt,
       history: convertedHistory,
       preferredModelId,
-      category: 'general',
+      category: routingCategory,
       params: { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 4096 },
     });
 

@@ -235,11 +235,24 @@ export class IntentDetector {
 
   private detectImageGeneration(lower: string, contextualMessage: string, rawMessage: string): IntentResult {
     const patterns = [
-      { regex: /\b(generate|create|make|draw|paint|design|produce|banao|dikhao|chitra|tasveer|photo)\s+(an?|the)?\s*(image|picture|photo|illustration|artwork|graphic|photo|pic)\b/i, weight: 0.99 },
-      { regex: /\b(draw|paint|sketch|illustrate|render|photo|tasveer|chitra|banao|dikhao)\b.*\b(me|banao|dikhao|tasveer|chitra)\b/i, weight: 0.94 },
-      { regex: /\b(image|picture|photo|illustration|pic|tasveer|chitra)\s+(of|showing|depicting|ka|ki)\b/i, weight: 0.95 },
-      { regex: /\b(show me|visualize|dikhao)\s+(an?|the)?\s*(image|photo|illustration|drawing|painting|sketch)\b/i, weight: 0.95 },
-      { regex: /\b(photo-?realistic|artistic|anime|sketch|cartoon|3d|watercolor|digital art)\b/i, weight: 0.84 },
+      // Explicit generate/create/make + image noun
+      { regex: /\b(generate|create|make|draw|paint|design|produce|banao|dikhao|chitra|tasveer|photo)\s+(an?|the|me|a)?\s*(image|picture|photo|illustration|artwork|graphic|pic|painting|sketch|drawing|wallpaper|poster|logo|banner|thumbnail|avatar|portrait|landscape|scene|render)\b/i, weight: 0.99 },
+      // Draw/paint/sketch/render me
+      { regex: /\b(draw|paint|sketch|illustrate|render|visualize|imagine|depict)\s+(me|a|an|the|this|that)?\b/i, weight: 0.97 },
+      // Image of / picture of / photo of
+      { regex: /\b(image|picture|photo|illustration|pic|tasveer|chitra|painting|sketch|drawing|artwork)\s+(of|showing|depicting|with|featuring|about|ka|ki)\b/i, weight: 0.97 },
+      // Show me a/an image/picture
+      { regex: /\b(show|display|give|send)\s+(me\s+)?(an?|the)?\s*(image|picture|photo|illustration|drawing|painting|sketch|visual|artwork)\b/i, weight: 0.96 },
+      // I want/need an image
+      { regex: /\b(i\s+)?(want|need|would like|can you make|could you make|please make|please create|please generate|please draw)\s+(an?|the|me\s+an?)?\s*(image|picture|photo|illustration|drawing|painting|sketch|artwork)\b/i, weight: 0.97 },
+      // Art styles as strong signals
+      { regex: /\b(photo-?realistic|photorealistic|artistic|anime|manga|sketch|cartoon|3d render|watercolor|oil painting|digital art|pixel art|concept art|fantasy art|sci-fi art|portrait|landscape painting|abstract art)\b/i, weight: 0.88 },
+      // Hinglish image requests
+      { regex: /\b(tasveer|chitra|photo|pic)\s+(bana|banao|dikhao|chahiye|chahie)\b/i, weight: 0.98 },
+      // "create a visual" / "generate a visual"
+      { regex: /\b(create|generate|make|produce)\s+(a\s+)?(visual|graphic|render|artwork|illustration|wallpaper|poster|logo|banner|thumbnail|avatar)\b/i, weight: 0.96 },
+      // Standalone "generate image" or "image generate"
+      { regex: /\b(generate\s+image|image\s+generate|create\s+image|image\s+create|make\s+image|image\s+maker)\b/i, weight: 0.99 },
     ];
 
     let maxConfidence = 0;
@@ -251,7 +264,7 @@ export class IntentDetector {
       if (match && pattern.weight > maxConfidence) {
         maxConfidence = pattern.weight;
         matchedPattern = pattern.regex.source;
-        extractedQuery = contextualMessage.replace(pattern.regex, '').replace(/\s+/g, ' ').trim() || contextualMessage;
+        extractedQuery = contextualMessage;
       }
     }
 
