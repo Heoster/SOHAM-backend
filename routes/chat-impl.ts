@@ -66,17 +66,18 @@ ${getTechnicalInstructions(technicalLevel)}`;
 
 function getToneInstructions(tone: string): string {
   switch (tone) {
-    case 'formal': return 'Use professional language, proper grammar, and a respectful tone.';
-    case 'casual': return 'Be friendly and conversational. Use simple language and contractions.';
-    default: return 'Be warm, approachable, and supportive. Balance professionalism with friendliness.';
+    case 'formal':   return 'Use professional language, proper grammar, and a respectful tone.';
+    case 'casual':   return 'Be friendly and conversational. Use simple language and contractions.';
+    case 'technical':return 'Be precise and technical. Prefer exact terminology over analogies.';
+    default:         return 'Be warm, approachable, and supportive. Balance professionalism with friendliness.';
   }
 }
 
 function getTechnicalInstructions(level: string): string {
   switch (level) {
     case 'beginner': return 'Explain concepts in simple terms. Avoid jargon and use analogies.';
-    case 'expert': return 'Use technical terminology freely. Provide in-depth explanations.';
-    default: return 'Balance technical accuracy with accessibility. Define specialized terms when first used.';
+    case 'expert':   return 'Use technical terminology freely. Provide in-depth explanations.';
+    default:         return 'Balance technical accuracy with accessibility. Define specialized terms when first used.';
   }
 }
 
@@ -154,14 +155,11 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       }
     }
 
-    // ── Build system prompt ─────────────────────────────────────────────────
-    const systemPrompt = `${SOHAM_SYSTEM_PROMPT}
-
-PERSONALITY & COMMUNICATION STYLE:
-${getToneInstructions(settings.tone || 'helpful')}
-
-TECHNICAL DEPTH:
-${getTechnicalInstructions(settings.technicalLevel || 'intermediate')}`;
+    // ── Build system prompt with live date/time at the top ──────────────────
+    const systemPrompt = buildSystemPrompt(
+      settings.tone || 'helpful',
+      settings.technicalLevel || 'intermediate'
+    );
 
     // ── Build orchestrated prompt (tools + RAG + memory) ────────────────────
     const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });
