@@ -241,6 +241,23 @@ app.use((req, res) => {
   });
 });
 
+// ── Global error handler (must be last, after all routes) ─────────────────────
+// Catches any unhandled errors thrown inside route handlers and returns JSON
+// instead of Express's default HTML error page.
+app.use((err: unknown, req: import('express').Request, res: import('express').Response, _next: import('express').NextFunction) => {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack   = err instanceof Error ? err.stack   : undefined;
+  console.error(`[Global Error Handler] ${req.method} ${req.path}:`, message);
+  if (stack) console.error(stack);
+  res.status(500).json({
+    success: false,
+    error: 'INTERNAL_ERROR',
+    message,
+    path: req.path,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ── Start ──────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 SOHAM Backend Server running on port ${PORT}`);
