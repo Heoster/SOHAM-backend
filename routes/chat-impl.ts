@@ -14,12 +14,14 @@
 
 import type { Request, Response } from 'express';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
-import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync } from '../core/orchestrator';
+import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync, triggerAutoLearnAsync } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildDeveloperIdentityPrompt } from '../config/developer-profile';
+import { getCurrentDateTimeContext } from '../memory/realtime-knowledge-service';
 
-const SOHAM_SYSTEM_PROMPT = `You are SOHAM, an intelligent and versatile assistant.
+// Static part of the system prompt — date/time is injected dynamically per request
+const SOHAM_BASE_PROMPT = `You are SOHAM, an intelligent and versatile assistant.
 
 ${buildDeveloperIdentityPrompt()}
 
@@ -33,7 +35,34 @@ RESPONSE GUIDELINES:
 2. Be Concise: Get to the point.
 3. Stay Focused: Address the actual question directly.
 4. For code: Always specify the language in code blocks.
-5. For math: Show step-by-step working.`;
+5. For math: Show step-by-step working.
+6. Use memory context naturally — don't announce that you're using it.`;
+
+/**
+ * Build the full system prompt with live date/time injected at the top.
+ * The date/time line is the FIRST thing the model reads so it cannot be missed.
+ */
+function buildSystemPrompt(tone: string, technicalLevel: string): string {
+  const dt = getCurrentDateTimeContext();
+
+  // Format: "Saturday, 03 May 2026 — 08:45 UTC"
+  const dtLine = `TODAY: ${dt.dayOfWeek}, ${dt.date} — ${dt.time}`;
+
+  return `${dtLine}
+
+${SOHAM_BASE_PROMPT}
+
+REALTIME AWARENESS:
+- The current date and time is stated at the very top of this prompt: "${dtLine}"
+- Always use this when answering questions about today's date, current time, day of week, or how long ago something happened.
+- Never say you don't know the current date or time.
+
+PERSONALITY & COMMUNICATION STYLE:
+${getToneInstructions(tone)}
+
+TECHNICAL DEPTH:
+${getTechnicalInstructions(technicalLevel)}`;
+}
 
 function getToneInstructions(tone: string): string {
   switch (tone) {
@@ -161,6 +190,17 @@ ${getTechnicalInstructions(settings.technicalLevel || 'intermediate')}`;
     // ── Extract long-term memories (non-blocking) ────────────────────────────
     extractLongTermMemoriesAsync(userId, message, result.response.text);
 
+    // ── Auto-learn: store tool results + Q→A pairs + detect corrections ──────
+    triggerAutoLearnAsync({
+      userMessage: message,
+      assistantMessage: result.response.text,
+      toolResults: agentContext.toolsUsed,
+      modelUsed: result.modelUsed,
+      previousAssistantMessage: history.length > 0
+        ? history[history.length - 1]?.content
+        : undefined,
+    });
+
     const responseTime = Date.now() - startTime;
 
     res.json({
@@ -175,6 +215,8 @@ ${getTechnicalInstructions(settings.technicalLevel || 'intermediate')}`;
       longTermMemoryCount: agentContext.longTermMemoryCount,
       userProfileLoaded: agentContext.userProfileLoaded,
       publicKnowledgeCount: agentContext.publicKnowledgeCount,
+      realtimeContextCount: agentContext.realtimeContextCount,
+      currentDateTime: agentContext.currentDateTime,
       responseTime: `${responseTime}ms`,
       timestamp: new Date().toISOString(),
     });

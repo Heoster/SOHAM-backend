@@ -161,9 +161,10 @@ export function analyzeQuery(query: string): QueryAnalysisResult {
 // ─── Step 2: Source Selection ─────────────────────────────────────────────────
 
 export function selectSources(analysis: QueryAnalysisResult): string[] {
-  // Tavily is always first when configured — it handles every query type well
   const base: string[] = [];
 
+  // You.com is a strong Tier-1 source when configured
+  if (isConfigured('you'))    base.push('you');
   if (isConfigured('tavily')) base.push('tavily');
 
   switch (analysis.queryType) {
@@ -187,25 +188,25 @@ export function selectSources(analysis: QueryAnalysisResult): string[] {
       base.push('wikipedia');
   }
 
-  // Firecrawl enriches the top Tavily URLs — add it when both are configured
+  // Firecrawl enriches the top results — add when both Tavily and Firecrawl are configured
   if (isConfigured('tavily') && isConfigured('firecrawl')) {
     base.push('firecrawl');
   }
 
   // DuckDuckGo is the last-resort free fallback
-  if (!isConfigured('tavily')) base.push('duckduckgo');
+  if (!isConfigured('tavily') && !isConfigured('you')) base.push('duckduckgo');
 
   return [...new Set(base)].filter(isConfigured);
 }
 
 function isConfigured(source: string): boolean {
   switch (source) {
+    case 'you':           return !!process.env.YOU_API_KEY;
     case 'tavily':        return !!process.env.TAVILY_API_KEY;
     case 'firecrawl':     return !!process.env.FIRECRAWL_API_KEY;
     case 'gnews':         return !!process.env.GNEWS_API_KEY;
     case 'cricapi':       return !!process.env.CRICAPI_KEY;
     case 'alpha-vantage': return !!process.env.ALPHA_VANTAGE_API_KEY;
-    // Always free
     case 'duckduckgo':    return true;
     case 'wikipedia':     return true;
     case 'open-meteo':    return true;
@@ -227,7 +228,49 @@ async function withTimeout<T>(fn: () => Promise<T>, ms: number, fallback: T): Pr
   }
 }
 
-// ─── Step 3a: Tavily Search ───────────────────────────────────────────────────
+// ─── Step 3a: You.com Search (Tier-1, real-time) ─────────────────────────────
+// You.com provides high-quality real-time web results with snippets.
+// Docs: https://documentation.you.com/api-reference
+
+async function fetchYouCom(
+  query: string
+): Promise<{ results: SearchResult[]; abstract?: string }> {
+  const key = process.env.YOU_API_KEY;
+  if (!key) return { results: [] };
+
+  try {
+    const res = await fetch(
+      `https://api.ydc-index.io/search?query=${encodeURIComponent(query)}&num_web_results=6`,
+      {
+        headers: { 'X-API-Key': key, Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      }
+    );
+    if (!res.ok) return { results: [] };
+
+    const data = await res.json() as any;
+    const hits: any[] = data.hits ?? [];
+
+    const results: SearchResult[] = hits.slice(0, 6).map((h: any, i: number) => ({
+      title:       h.title ?? '',
+      url:         h.url ?? '',
+      snippet:     (Array.isArray(h.snippets) ? h.snippets.join(' ') : h.description ?? '').slice(0, 300),
+      source:      'you.com',
+      publishedAt: h.published_date ?? undefined,
+      score:       0.90 - i * 0.03,
+    }));
+
+    // You.com sometimes returns an AI answer
+    const abstract = data.ai_snippets?.[0]?.snippet ?? undefined;
+
+    return { results, abstract };
+  } catch (err) {
+    console.warn('[You.com] Fetch failed:', err);
+    return { results: [] };
+  }
+}
+
+// ─── Step 3b: Tavily Search ───────────────────────────────────────────────────
 // Tavily is purpose-built for AI agents — returns clean, ranked, real-time results.
 // Docs: https://docs.tavily.com/docs/rest-api/api-reference
 
@@ -635,6 +678,11 @@ export async function runSearchPipeline(query: string): Promise<SearchPipelineRe
 
   const fetchJobs: Promise<FetchOut>[] = [];
 
+  if (sources.includes('you')) {
+    fetchJobs.push(
+      withTimeout(() => fetchYouCom(analysis.cleanQuery), 8000, empty)
+    );
+  }
   if (sources.includes('tavily')) {
     fetchJobs.push(
       withTimeout(() => fetchTavily(analysis.cleanQuery, analysis.queryType), 8000, empty)

@@ -398,6 +398,11 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
   };
 
   let search: Record<string, ProviderHealth> = {
+    you: envCheck(
+      ['YOU_API_KEY'], false,
+      'You.com real-time web search — Tier-1 alongside Tavily',
+      'YOU_API_KEY', 'https://api.you.com'
+    ),
     tavily: envCheck(
       ['TAVILY_API_KEY'], false,
       'Primary web search — real-time, AI-optimised results',
