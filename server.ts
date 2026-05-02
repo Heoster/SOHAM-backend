@@ -92,25 +92,49 @@ import { factCheckHandler } from './routes/ai/fact-check';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(origin => origin.trim())
-  .filter(Boolean);
+
+// Build the allowed-origins set at startup.
+// Always include the server's own Render URL so internal requests never get blocked.
+const allowedOrigins = new Set(
+  (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean)
+);
+
+// Auto-add the Render service URL so the server never blocks itself.
+// RENDER_EXTERNAL_URL is injected automatically by Render at runtime.
+if (process.env.RENDER_EXTERNAL_URL) {
+  allowedOrigins.add(process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ''));
+}
 
 app.set('trust proxy', 1);
 
-// ── Middleware ─────────────────────────────────────────────────────────────────
+// ── CORS ───────────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+    // No origin = same-origin request, server-to-server, curl, Postman → allow
+    if (!origin) {
       callback(null, true);
       return;
     }
-
-    callback(new Error(`CORS blocked for origin: ${origin}`));
+    // No whitelist configured → allow all (open API mode)
+    if (allowedOrigins.size === 0) {
+      callback(null, true);
+      return;
+    }
+    if (allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    // Blocked — return null (not an Error) so Express doesn't throw a 500.
+    // The cors package will send a 403 with no Access-Control-Allow-Origin header.
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    callback(null, false);
   },
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
 }));
 app.use(json({ limit: '50mb' })); // Large limit for PDF/image uploads
 
