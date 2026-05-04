@@ -29,8 +29,24 @@ export interface ModelConfig {
   description: string;
   contextWindow: number;
   supportsStreaming: boolean;
+  maxOutputTokens?: number;
   defaultParams: ModelParams;
   enabled: boolean;
+  /** Higher = preferred in auto-routing. Used to rank models within a category. */
+  priority?: number;
+  lifecycle?: {
+    status: 'ACTIVE' | 'DEAD' | 'DEPRECATED';
+    deprecationDate?: string;
+    replacementModelId?: string;
+  };
+  capabilities?: Array<{
+    type: 'TEXT' | 'VISION' | 'AUDIO_IN' | 'AUDIO_OUT' | 'IMAGE_GEN' | 'VIDEO_GEN';
+    supportedFormats?: string[];
+  }>;
+  rateLimit?: {
+    requestsPerMinute: number;
+    requestsPerDay: number;
+  };
 }
 
 // Provider configuration interface
@@ -60,16 +76,31 @@ export const ModelParamsSchema = z.object({
 });
 
 export const ModelConfigSchema = z.object({
-  id: z.string().min(1).regex(/^[a-z0-9-]+$/, 'ID must be lowercase alphanumeric with hyphens'),
-  name: z.string().min(1),
+  id: z.string().min(1),
+  name: z.string().min(1).optional().default(''),
   provider: ProviderTypeSchema,
   modelId: z.string().min(1),
   category: ModelCategorySchema,
-  description: z.string(),
-  contextWindow: z.number().int().positive(),
+  description: z.string().optional().default(''),
+  contextWindow: z.number().int().nonnegative(),
   supportsStreaming: z.boolean(),
+  maxOutputTokens: z.number().int().nonnegative().optional(),
   defaultParams: ModelParamsSchema,
   enabled: z.boolean(),
+  priority: z.number().optional(),
+  lifecycle: z.object({
+    status: z.enum(['ACTIVE', 'DEAD', 'DEPRECATED']),
+    deprecationDate: z.string().optional(),
+    replacementModelId: z.string().optional(),
+  }).optional(),
+  capabilities: z.array(z.object({
+    type: z.enum(['TEXT', 'VISION', 'AUDIO_IN', 'AUDIO_OUT', 'IMAGE_GEN', 'VIDEO_GEN']),
+    supportedFormats: z.array(z.string()).optional(),
+  })).optional(),
+  rateLimit: z.object({
+    requestsPerMinute: z.number(),
+    requestsPerDay: z.number(),
+  }).optional(),
 });
 
 export const ProviderConfigSchema = z.object({

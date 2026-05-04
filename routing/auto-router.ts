@@ -1,6 +1,8 @@
 /**
  * Auto Router
- * Automatically selects the best model based on query analysis
+ * Automatically selects the best model based on query analysis.
+ * Models are sorted by priority (highest first) in the registry,
+ * so the first model in any category list is always the fastest/best available.
  */
 
 import type { ModelConfig, ModelCategory } from './model-config';
@@ -24,7 +26,7 @@ export class AutoRouter {
   private registry = getModelRegistry();
   
   /**
-   * Select the best model for a given query
+   * Select the best (highest-priority) model for a given query
    */
   selectModel(query: string, preferredCategory?: ModelCategory): AutoRouteResult {
     // Classify the query
@@ -33,18 +35,20 @@ export class AutoRouter {
     // Use preferred category if provided, otherwise use classification
     const targetCategory = preferredCategory || classification.category;
     
-    // Try to get a model from the target category
+    // Get models sorted by priority (highest first) — registry handles sorting
     const categoryModels = this.registry.getModelsByCategory(targetCategory);
     
     if (categoryModels.length > 0) {
+      // Pick the highest-priority model in the category
+      const best = categoryModels[0];
       return {
-        model: categoryModels[0],
+        model: best,
         classification: {
           ...classification,
           category: targetCategory,
           reasoning: preferredCategory 
-            ? `Using preferred category: ${preferredCategory}`
-            : classification.reasoning,
+            ? `Using preferred category: ${preferredCategory} → ${best.name} (priority ${best.priority ?? 'n/a'})`
+            : `${classification.reasoning} → ${best.name} (priority ${best.priority ?? 'n/a'})`,
         },
         autoRouted: true,
         fallbackUsed: false,

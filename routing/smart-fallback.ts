@@ -76,29 +76,31 @@ function isCriticalFailure(error: unknown): boolean {
 /**
  * Get fallback models for a given category.
  * Rotates across ALL providers so every model gets used over time.
- * Priority order within each provider: highest priority number first.
+ * Within each provider, highest-priority models come first.
+ * Fast providers (Cerebras, Groq) are tried before slower ones.
  */
 function getFallbackModels(category: ModelCategory): ModelConfig[] {
   const registry = getModelRegistry();
 
-  // Provider rotation order — spread load across all providers
-  // Each provider gets a slot so Auto mode genuinely uses all of them
-  const providerOrder = ['cerebras', 'groq', 'google', 'huggingface', 'openrouter'];
+  // Provider rotation order — fastest providers first
+  // Cerebras is the fastest inference hardware, then Groq, then Google, HF, OpenRouter
+  const providerOrder = ['cerebras', 'groq', 'google', 'openrouter', 'huggingface'];
 
   const categoryModels = registry.getModelsByCategory(category);
   const allModels = registry.getAvailableModels();
 
+  // Use category models if available, otherwise fall back to all models
   const pool = categoryModels.length > 0 ? categoryModels : allModels;
 
-  // Group by provider, sort each group by model id (stable order from registry)
+  // Group by provider (already sorted by priority within each group from registry)
   const byProvider = new Map<string, ModelConfig[]>();
   for (const m of pool) {
     if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
     byProvider.get(m.provider)!.push(m);
   }
 
-  // Interleave: take the top model from each provider in rotation order
-  // This ensures Auto mode cycles through Cerebras → Groq → Google → HF → OpenRouter
+  // Interleave: take top models from each provider in rotation order
+  // This ensures Auto mode cycles through Cerebras → Groq → Google → OpenRouter → HF
   const result: ModelConfig[] = [];
   const maxPerProvider = 3;
 
@@ -247,8 +249,8 @@ export async function generateWithSmartFallback(
     throw new Error('No models available. Please check your GROQ_API_KEY configuration at https://console.groq.com/keys');
   }
   
-  // Try up to 4 models in sequence: primary + 3 fallbacks
-  const maxModelsToTry = Math.min(modelsToTry.length, 4);
+  // Try up to 6 models in sequence: primary + 5 fallbacks (covers all fast providers)
+  const maxModelsToTry = Math.min(modelsToTry.length, 6);
   
   // Try each model in sequence
   for (let i = 0; i < maxModelsToTry; i++) {

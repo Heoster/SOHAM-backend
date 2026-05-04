@@ -9,7 +9,7 @@ interface ModelsConfigStore {
   providers: Record<string, ProviderConfig>;
   models: ModelConfig[];
 }
-import modelsConfigData from './models-config.json';
+import modelsConfigData from './models-config-v3.3.json';
 
 // Type assertion for the imported JSON
 const modelsConfig = modelsConfigData as ModelsConfigStore;
@@ -79,19 +79,54 @@ export class ModelRegistry {
   }
 
   /**
-   * Get all models in a specific category
+   * Get all models in a specific category, sorted by priority (highest first).
+   * Excludes deprecated/dead models and non-text-capable models.
    */
   getModelsByCategory(category: ModelCategory): ModelConfig[] {
-    return this.models.filter(
-      model => model.category === category && this.isModelAvailable(model.id)
-    );
+    return this.models
+      .filter(model =>
+        model.category === category &&
+        this.isModelAvailable(model.id) &&
+        this._isTextCapable(model)
+      )
+      .sort((a, b) => (b.priority ?? 50) - (a.priority ?? 50));
   }
 
   /**
-   * Get all available models (enabled and provider available)
+   * Get all available models sorted by priority (highest first).
+   * Excludes deprecated/dead models and non-text-capable models.
    */
   getAvailableModels(): ModelConfig[] {
-    return this.models.filter(model => this.isModelAvailable(model.id));
+    return this.models
+      .filter(model => this.isModelAvailable(model.id) && this._isTextCapable(model))
+      .sort((a, b) => (b.priority ?? 50) - (a.priority ?? 50));
+  }
+
+  /**
+   * Returns true if the model is suitable for chat/text generation.
+   * Excludes safety guards, embedding models, TTS, STT, image-gen, video-gen.
+   */
+  private _isTextCapable(model: ModelConfig): boolean {
+    // Explicitly exclude known non-chat utility models by ID pattern
+    const utilityPatterns = [
+      /guard/i,        // llama-guard, safety models
+      /embedding/i,    // embedding models
+      /whisper/i,      // STT models
+      /tts/i,          // TTS models
+      /imagen/i,       // image generation
+      /veo/i,          // video generation
+    ];
+    if (utilityPatterns.some(p => p.test(model.id) || p.test(model.modelId))) return false;
+
+    // If no capabilities array, assume text (old config format)
+    if (!model.capabilities || model.capabilities.length === 0) return true;
+
+    // Must have TEXT capability and not be exclusively non-text
+    const hasText = model.capabilities.some(c => c.type === 'TEXT');
+    const onlyNonText = model.capabilities.every(
+      c => c.type === 'AUDIO_IN' || c.type === 'AUDIO_OUT' || c.type === 'IMAGE_GEN' || c.type === 'VIDEO_GEN'
+    );
+    return hasText && !onlyNonText;
   }
 
   /**
@@ -139,6 +174,8 @@ export class ModelRegistry {
     const model = this.models.find(m => m.id === id);
     if (!model) return false;
     if (!model.enabled) return false;
+    // Exclude dead/deprecated models
+    if (model.lifecycle && model.lifecycle.status !== 'ACTIVE') return false;
 
     return this.isProviderAvailable(model.provider);
   }
