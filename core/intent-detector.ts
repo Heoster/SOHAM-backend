@@ -109,6 +109,8 @@ function hasExplicitExplanationSignal(message: string): boolean {
 }
 
 function isFollowUpExplanation(message: string): boolean {
+  // Don't treat as explanation follow-up if it contains temporal/live/finance signals
+  if (/\b(yesterday|last night|this morning|today|kal|parso|abhi|live|score|price|news|bitcoin|ethereum|crypto|stock|weather|mausam)\b/i.test(message)) return false;
   return /^(what about|how about|tell me more about|more about|what else about|kya|kyu|aur batao|aur kya)\b/i.test(message.trim());
 }
 
@@ -129,22 +131,51 @@ export function requiresWebSearch(message: string): boolean {
     return false;
   }
 
+  // Non-Latin script queries (Hindi, Bengali, Arabic, etc.) — treat as web search
+  // unless they contain explicit non-search signals
+  const hasNonLatinScript = /[\u0900-\u097F\u0980-\u09FF\u0600-\u06FF\u0E00-\u0E7F\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF]/.test(message);
+  if (hasNonLatinScript) return true;
+
+  if (hasExplicitNonSearchSignal(message)) {
+    return false;
+  }
+
   const explicitSolveSignals = [
     /\b(solve|calculate|simplify|evaluate|integrate|differentiate|factorize|derive|prove|hal karo|nikalo|solve karo)\b/,
     /\b(equation|expression|formula|matrix|determinant|polynomial|integral|derivative|sutra|sawal|pariksha)\b/,
   ];
+  if (explicitSolveSignals.some(p => p.test(lower))) return false;
 
-  if (explicitSolveSignals.some(pattern => pattern.test(lower))) {
-    return false;
-  }
+  // "what is a/an X" — definitional queries should NOT trigger web search
+  // unless they contain a live/time-sensitive modifier OR are history/origin lookups
+  const isDefinitional =
+    /^what (is|are) (a |an |the )?[a-z]/i.test(message.trim()) &&
+    !/\b(current|latest|today|live|now|recent|price|score|rate|abhi|aaj|history|origin|itihas)\b/i.test(lower);
+  if (isDefinitional) return false;
 
   const timeSensitive = [
+    // Weather only when it's a live query, not "what is a weather widget/app/API"
+    /\b(weather|forecast|mausam|baarish)\b(?!.{0,30}\b(widget|app|api|component|library|tool|system|model|concept|definition|meaning)\b)/i,
     /\b(today|tonight|this (week|month|year)|right now|currently|at the moment|as of|latest|recent|newest|breaking|live|aaj|abhi|haali me|hal hi me|turant)\b/,
-    /\b(news|headlines|update|announcement|release|launch|event|match|score|result|weather|forecast|stock|price|rate|trend|khabar|samachar|taza|mausam|baarish)\b/,
+    /\b(news|headlines|update|announcement|release|launch|event|match|score|result|forecast|stock|price|rate|trend|khabar|samachar|taza|baarish)\b/,
     /\b(who (is|are) (the )?(current|new|latest|now|abhi ka|is waqt))\b/,
     /\b(what (is|are) (the )?(current|latest|new|today'?s?|aaj ka))\b/,
     /\b(how much (does|is|are|kitna|dam|bhav|kimat|paise|paisa))\b/,
     /\b(is .+ (still|open|available|alive|working|running))\b/,
+    /\b(what('?s| is| has)?\s+(happening|going on|new|occurred|happened))\b/,
+    /\b(happened|happening|occurred|going on)\b.{0,40}\b(world|today|recently|last (few )?(hours?|days?|minutes?|weeks?))\b/,
+    /\b(last (few )?(hours?|days?|minutes?|weeks?)|past (few )?(hours?|days?|minutes?|weeks?))\b/,
+    /\b(recent events?|world events?|global events?|current events?|today'?s? events?)\b/,
+    /\b(anything (new|happening|interesting)|what'?s? new|catch me up|fill me in|update me)\b/,
+    /\b(world (news|update|situation|today)|global (news|update|situation))\b/,
+    /\b(duniya mein|aaj kya hua|kya ho raha hai|duniya ka haal|taza khabar|abhi kya chal raha)\b/,
+    /\b(kya chal raha|kya ho raha|kya hua|kya hoga|kya chalega|kya scene hai|scene kya hai|haal kya hai)\b/i,
+    /\btell me about\b.{0,30}\b(recent|latest|today|current|world|global|breaking)\b.{0,30}\b(events?|news|updates?|happenings?)\b/i,
+    /\b(yesterday|last night|this morning|this afternoon|this evening|kal|parso|subah|raat ko)\b/,
+    /^(bitcoin|btc|ethereum|eth|crypto|stocks?|nifty|sensex|gold|silver|oil)$/i,
+    /\b(wether|wheather|forcast|temprature)\b/i,
+    /\b(prise|prce|prcie)\b/i,
+    /\b(newss?|headlins?|breakng)\b/i,
   ];
 
   const factualLookup = [
@@ -152,10 +183,12 @@ export function requiresWebSearch(message: string): boolean {
     /\b(what (year|date|time|place|country|city) (was|is|did|does|kab|kaha|kon sa))\b/,
     /\b(where (is|are|was|were) .+ (located|based|from|born|founded|kaha par hai))\b/,
     /\b(population of|capital of|currency of|president of|prime minister of|vice president of|ceo of|founder of|governor of|chief minister of|district magistrate of|cm|pm|dm|hm|fm|rm|sp|sho|ias|ips)\b/,
-    /\b(kaun hai|kya hai|kab hua|kaha hai|kaise hua|kisne kiya)\b/i, // Standalone Hinglish questions
+    /\b(kaun hai|kya hai|kab hua|kaha hai|kaise hua|kisne kiya)\b/i,
+    // History/origin factual lookups
+    /\b(history of|origin of|when was .+ (invented|created|founded|born|established)|itihas)\b/i,
   ];
 
-  return [...timeSensitive, ...factualLookup].some(pattern => pattern.test(lower));
+  return [...timeSensitive, ...factualLookup].some(p => p.test(lower));
 }
 
 export class IntentDetector {
@@ -191,20 +224,37 @@ export class IntentDetector {
   private detectWebSearch(lower: string, contextualMessage: string, rawMessage: string): IntentResult {
     const explanationSignal = hasExplicitExplanationSignal(rawMessage) || isFollowUpExplanation(rawMessage);
 
+    // Short follow-up where the expanded contextual message contains live-data terms
+    // e.g. "what about ethereum?" after a bitcoin conversation
+    const isContextualLiveFollowUp =
+      rawMessage.trim().split(/\s+/).length <= 5 &&
+      /\b(bitcoin|ethereum|crypto|stock|weather|score|price|news|mausam|ipl|match|tomorrow|kal)\b/i.test(contextualMessage) &&
+      /^(what about|and |also |how about|what of)\b/i.test(rawMessage.trim());
+
     const patterns = [
       { regex: /\b(search|google|bing|find|lookup|look up|dhundo|pata karo|search karo|pata lagao)\b/i, weight: 0.95 },
       { regex: /\bweb\s+search\b/i, weight: 0.99 },
       { regex: /(latest|current|recent|newest|today'?s?|this week'?s?|aaj ka|abhi ka|hal hi me)\s+(news|updates?|information|data|stats?|trends?|khabar|info|samachar|jankari|taza)/i, weight: 0.92 },
-      { regex: /\b(current|latest|today|live|price|weather|score|news|rate|abhi|aaj|live|dam|bhav|kimat|paise|paisa|taza)\b/i, weight: 0.82 },
-      // Factual Lookups - Registered for high-priority web search
+      { regex: /\b(current|latest|today|live|price|weather|score|news|rate|abhi|aaj|dam|bhav|kimat|paise|paisa|taza)\b/i, weight: 0.82 },
       { regex: /\b(who (invented|created|founded|discovered|wrote|made|built|designed|kisne banaya|kisne kiya|kaun hai))\b/i, weight: 0.98 },
       { regex: /\b(what (year|date|time|place|country|city) (was|is|did|does|kab|kaha|kon sa))\b/i, weight: 0.98 },
       { regex: /\b(where (is|are|was|were) .+ (located|based|from|born|founded|kaha par hai))\b/i, weight: 0.98 },
       { regex: /\b(population of|capital of|currency of|president of|prime minister of|vice president of|ceo of|founder of|governor of|chief minister of|district magistrate of|cm|pm|dm|hm|fm|rm|sp|sho|ias|ips)\b/i, weight: 0.97 },
       { regex: /\b(kaun hai|kya hai|kab hua|kaha hai|jankari do|pata karo)\b/i, weight: 0.96 },
+      { regex: /\b(what('?s| is| has)?\s+(happening|going on|new|occurred|happened))\b/i, weight: 0.94 },
+      { regex: /\b(happened|happening|occurred|going on)\b.{0,40}\b(world|today|recently|last (few )?(hours?|days?|minutes?|weeks?))\b/i, weight: 0.95 },
+      { regex: /\b(last (few )?(hours?|days?|minutes?|weeks?)|past (few )?(hours?|days?|minutes?|weeks?))\b/i, weight: 0.93 },
+      { regex: /\b(recent events?|world events?|global events?|current events?|today'?s? events?)\b/i, weight: 0.94 },
+      { regex: /\b(anything (new|happening|interesting)|what'?s? new|catch me up|fill me in|update me)\b/i, weight: 0.92 },
+      { regex: /\b(world (news|update|situation|today)|global (news|update|situation))\b/i, weight: 0.94 },
+      { regex: /\b(duniya mein|aaj kya hua|kya ho raha hai|duniya ka haal|taza khabar|abhi kya chal raha)\b/i, weight: 0.95 },
+      { regex: /\b(kya chal raha|kya ho raha|kya hua|kya hoga|kya chalega|kya scene hai|scene kya hai|haal kya hai)\b/i, weight: 0.95 },
+      { regex: /\btell me about\b.{0,30}\b(recent|latest|today|current|world|global|breaking)\b.{0,30}\b(events?|news|updates?|happenings?)\b/i, weight: 0.94 },
     ];
 
     let maxConfidence = requiresWebSearch(contextualMessage) ? 0.88 : 0;
+    if (isContextualLiveFollowUp) maxConfidence = Math.max(maxConfidence, 0.90);
+
     let extractedQuery = contextualMessage;
     let matchedPattern = maxConfidence > 0 ? 'requiresWebSearch' : 'none';
 
@@ -219,8 +269,13 @@ export class IntentDetector {
       }
     }
 
-    if (explanationSignal && !factualMatch) {
-      maxConfidence = Math.min(maxConfidence, 0.62);
+    if (explanationSignal && !factualMatch && !isContextualLiveFollowUp) {
+      const isLiveWorldQuery =
+        /\b(recent|latest|today|current|world|global|breaking)\b.{0,30}\b(events?|news|updates?|happenings?)\b/i.test(rawMessage) ||
+        /\b(last (few )?(hours?|days?|weeks?)|past (few )?(hours?|days?|weeks?))\b/i.test(rawMessage);
+      if (!isLiveWorldQuery) {
+        maxConfidence = Math.min(maxConfidence, 0.62);
+      }
     } else if (explanationSignal && factualMatch) {
       maxConfidence = Math.min(maxConfidence, 0.85);
     }
@@ -294,7 +349,13 @@ export class IntentDetector {
     const patterns = [
       { regex: /\b(write|create|generate|make|build|likho|banao|code likho|script banao)\b.*\b(function|class|component|script|program|code|api|endpoint|coding|logic|app)\b/i, weight: 0.95 },
       { regex: /\b(python|javascript|typescript|react|node|java|c\+\+|rust|go|sql)\b.*\b(code|function|class|script|component|query|endpoint|program|likho|banao)\b/i, weight: 0.92 },
+      // "write X in python/javascript/etc" — language-anchored write requests
+      { regex: /\b(write|create|make|build|implement|code)\b.{0,40}\b(in|using|with)\s+(python|javascript|typescript|java|c\+\+|rust|go|ruby|php|swift|kotlin|sql|html|css|react|node)\b/i, weight: 0.93 },
+      // "X in python" where X is a program/task
+      { regex: /\b(hello world|fibonacci|factorial|sorting|binary search|linked list|stack|queue|tree|graph|algorithm|function|script|program|app|bot|scraper|api|server|cli)\b.{0,30}\b(in|using|with)\s+(python|javascript|typescript|java|c\+\+|rust|go|ruby|php|swift|kotlin)\b/i, weight: 0.94 },
       { regex: /\b(code|coding|logic|algorithm)\b/i, weight: 0.75 },
+      // Hinglish code requests
+      { regex: /\b(code likhna|code banana|program banana|script likhna)\b/i, weight: 0.90 },
     ];
 
     let maxConfidence = 0;
@@ -318,6 +379,14 @@ export class IntentDetector {
       { regex: /\b(teach me|help me understand|tell me about|batao|kya hai)\b/i, weight: 0.88 },
       { regex: /\b(how does|how do|why does|why do|kaise|kyu|kaise hota hai)\b/i, weight: 0.84 },
       { regex: /\b(what about|how about|tell me more about|more about|what else about|aur kya|aur batao)\b/i, weight: history.length > 0 ? 0.8 : 0.62 },
+      // "what is X" / "what are X" — bare explanation queries
+      { regex: /^(what is|what are|what was|what were)\s+\w/i, weight: 0.82 },
+      // "is X good/bad/worth/better/popular" — opinion/evaluation queries
+      { regex: /^is\s+\w.{0,40}\b(good|bad|worth|better|worse|useful|helpful|recommended|safe|reliable|popular|effective)\b/i, weight: 0.80 },
+      // "why is X" — causal explanation (require a subject, not bare "why did that happen")
+      { regex: /^why (is|are|was|were|do|does|did)\s+(?!that\b|this\b|it\b|they\b|he\b|she\b)\w/i, weight: 0.82 },
+      // Hinglish explanation: "X kya hota hai", "X kaise kaam karta hai"
+      { regex: /\b(kya hota hai|kaise kaam karta hai|kya matlab hai|kya hota|kaise hota|kya cheez hai)\b/i, weight: 0.86 },
     ];
 
     let maxConfidence = 0;
@@ -345,6 +414,8 @@ export class IntentDetector {
       { regex: /\b(translate|say|how (do you|do i) say|kaise bolte hai|kaise kahe)\b/i, weight: 0.95 },
       { regex: /\b(translate|translation|anuvad|bhasha|bolte)\b/i, weight: 0.8 },
       { regex: /\bin\s+(spanish|french|hindi|german|japanese|chinese|arabic|portuguese|russian|korean|italian|turkish|dutch|polish|swedish|norwegian|danish|finnish|greek|hebrew|thai|vietnamese|indonesian|malay|bengali|urdu|tamil|telugu|marathi|gujarati|punjabi|kannada|malayalam)\b/i, weight: 0.85 },
+      // Typo-tolerant: tranlsate, translat, trnslate, transalte, etc.
+      { regex: /\b(tranlsate|translat|trnslate|transalte|trnaslate|tanslate|trasnlate)\b/i, weight: 0.93 },
     ];
     let maxConfidence = 0;
     for (const pattern of patterns) {
@@ -412,8 +483,11 @@ export class IntentDetector {
 
   private detectJoke(lower: string, original: string): IntentResult {
     const patterns = [
-      { regex: /\b(tell (me )?(a )?(joke|pun|riddle|fun fact|majak|chutkula|kahani|loksukhti))\b/i, weight: 0.95 },
+      { regex: /\b(tell (me )?(a )?(joke|pun|riddle|fun fact|majak|chutkula|kahani|loksukhti))\b/i, weight: 0.97 },
+      { regex: /\b(write (me )?(a )?(joke|pun|riddle|funny story))\b/i, weight: 0.97 },
+      { regex: /\b(give me (a )?(joke|pun|riddle|chutkula))\b/i, weight: 0.97 },
       { regex: /\b(chutkula|majak|kahani|hasao|roast)\b/i, weight: 0.98 },
+      { regex: /\b(sunao|suna|ek joke|ek chutkula|mujhe.*joke|mujhe.*chutkula|mujhe.*hasao)\b/i, weight: 0.97 },
       { regex: /\b(make me (laugh|smile|hasao))\b/i, weight: 0.9 },
       { regex: /\b(roast me|roast (my|this))\b/i, weight: 0.95 },
       { regex: /\b(something funny|be funny|be witty|majak karo|kuch hasao)\b/i, weight: 0.8 },

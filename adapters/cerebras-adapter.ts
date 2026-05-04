@@ -27,6 +27,13 @@ interface CerebrasResponse {
   };
 }
 
+interface CerebrasStreamChunk {
+  choices: Array<{
+    delta: { content?: string };
+    finish_reason: string | null;
+  }>;
+}
+
 export class CerebrasAdapter extends BaseProviderAdapter {
   readonly provider = 'cerebras' as const;
   
@@ -174,6 +181,77 @@ export class CerebrasAdapter extends BaseProviderAdapter {
     }
   }
   
+  /**
+   * Stream tokens from Cerebras using SSE (OpenAI-compatible stream=true)
+   */
+  async *generateStream(request: GenerateRequest): AsyncGenerator<string, void, unknown> {
+    const { model, prompt, systemPrompt, history, params } = request;
+    const mergedParams = this.mergeParams(model, params);
+
+    const apiKey = process.env.CEREBRAS_API_KEY;
+    if (!apiKey) throw createUserFriendlyError(new Error('CEREBRAS_API_KEY not configured'), 'cerebras', model.id);
+
+    const messages = this.buildMessages(prompt, systemPrompt, history);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
+
+    const response = await fetch(CEREBRAS_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model.modelId,
+        messages,
+        temperature: mergedParams.temperature,
+        top_p: mergedParams.topP,
+        max_tokens: mergedParams.maxOutputTokens,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok || !response.body) {
+      const errorText = await response.text().catch(() => '');
+      throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'cerebras', model.id);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') return;
+          try {
+            const chunk = JSON.parse(data) as CerebrasStreamChunk;
+            const token = chunk.choices?.[0]?.delta?.content;
+            if (token) yield token;
+          } catch {
+            // malformed chunk — skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   /**
    * Build messages array for OpenAI-compatible format
    */

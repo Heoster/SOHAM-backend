@@ -48,6 +48,13 @@ interface HuggingFaceResponse {
   };
 }
 
+interface HuggingFaceStreamChunk {
+  choices?: Array<{
+    delta?: { content?: string };
+    finish_reason?: string | null;
+  }>;
+}
+
 export class HuggingFaceAdapter extends BaseProviderAdapter {
   readonly provider = 'huggingface' as const;
   
@@ -55,6 +62,78 @@ export class HuggingFaceAdapter extends BaseProviderAdapter {
     return !!process.env.HUGGINGFACE_API_KEY;
   }
   
+  /**
+   * Stream tokens from HuggingFace Router (OpenAI-compatible stream=true)
+   */
+  async *generateStream(request: GenerateRequest): AsyncGenerator<string, void, unknown> {
+    const { model, prompt, systemPrompt, history, params } = request;
+    const mergedParams = this.mergeParams(model, params);
+
+    const apiKey = process.env.HUGGINGFACE_API_KEY;
+    if (!apiKey) throw createUserFriendlyError(new Error('HUGGINGFACE_API_KEY not configured'), 'huggingface', model.id);
+
+    const messages = this.buildMessages(prompt, systemPrompt, history);
+    const apiUrl = `${HUGGINGFACE_ROUTER_URL}/chat/completions`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model.modelId,
+        messages,
+        max_tokens: mergedParams.maxOutputTokens,
+        temperature: mergedParams.temperature,
+        top_p: mergedParams.topP,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok || !response.body) {
+      const errorText = await response.text().catch(() => '');
+      throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'huggingface', model.id);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') return;
+          try {
+            const chunk = JSON.parse(data) as HuggingFaceStreamChunk;
+            const token = chunk.choices?.[0]?.delta?.content;
+            if (token) yield token;
+          } catch {
+            // malformed chunk — skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const { model, prompt, systemPrompt, history, params } = request;
     const mergedParams = this.mergeParams(model, params);

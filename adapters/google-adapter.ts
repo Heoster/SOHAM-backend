@@ -46,6 +46,15 @@ interface GoogleResponse {
   };
 }
 
+interface GoogleStreamChunk {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: string }>;
+    };
+    finishReason?: string;
+  }>;
+}
+
 export class GoogleAdapter extends BaseProviderAdapter {
   readonly provider = 'google' as const;
   
@@ -53,6 +62,76 @@ export class GoogleAdapter extends BaseProviderAdapter {
     return !!process.env.GOOGLE_API_KEY;
   }
   
+  /**
+   * Stream tokens from Google Gemini using streamGenerateContent
+   */
+  async *generateStream(request: GenerateRequest): AsyncGenerator<string, void, unknown> {
+    const { model, prompt, systemPrompt, history, params } = request;
+    const mergedParams = this.mergeParams(model, params);
+
+    const apiKey = process.env.GOOGLE_API_KEY;
+    if (!apiKey) throw createUserFriendlyError(new Error('GOOGLE_API_KEY not configured'), 'google', model.id);
+
+    const contents = this.buildContents(prompt, systemPrompt, history);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
+
+    const apiUrl = `${GOOGLE_API_URL}/${model.modelId}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          temperature: mergedParams.temperature,
+          topP: mergedParams.topP,
+          topK: mergedParams.topK,
+          maxOutputTokens: mergedParams.maxOutputTokens,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok || !response.body) {
+      const errorText = await response.text().catch(() => '');
+      throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'google', model.id);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          try {
+            const chunk = JSON.parse(data) as GoogleStreamChunk;
+            const token = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (token) yield token;
+          } catch {
+            // malformed chunk — skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const { model, prompt, systemPrompt, history, params } = request;
     const mergedParams = this.mergeParams(model, params);

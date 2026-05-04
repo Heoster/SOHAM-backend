@@ -102,22 +102,24 @@ export class MemoryExtractionService {
   private async extractProfileFacts(conversationText: string): Promise<ExtractedProfileFacts> {
     const cerebrasKey = process.env.CEREBRAS_API_KEY;
     const groqKey = process.env.GROQ_API_KEY;
-    const apiKey = cerebrasKey || groqKey;
-    const baseUrl = cerebrasKey
-      ? 'https://api.cerebras.ai/v1'
-      : 'https://api.groq.com/openai/v1';
-    const model = 'llama-3.3-70b-versatile';
 
-    if (apiKey) {
+    const provider: { key: string; baseUrl: string; model: string } | null =
+      cerebrasKey
+        ? { key: cerebrasKey, baseUrl: 'https://api.cerebras.ai/v1', model: 'llama3.1-8b' }
+        : groqKey
+        ? { key: groqKey, baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' }
+        : null;
+
+    if (provider) {
       try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+        const response = await fetch(`${provider.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${apiKey}`,
+            Authorization: `Bearer ${provider.key}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model,
+            model: provider.model,
             messages: [
               {
                 role: 'system',
@@ -263,23 +265,26 @@ Rules:
   private async extractMemoriesWithCerebras(conversationText: string): Promise<string[]> {
     const cerebrasKey = process.env.CEREBRAS_API_KEY;
     const groqKey = process.env.GROQ_API_KEY;
-    const apiKey = cerebrasKey || groqKey;
-    const baseUrl = cerebrasKey
-      ? 'https://api.cerebras.ai/v1'
-      : 'https://api.groq.com/openai/v1';
-    const model = 'llama-3.3-70b-versatile';
+
+    // Pick provider + correct model for that provider
+    const provider: { key: string; baseUrl: string; model: string } | null =
+      cerebrasKey
+        ? { key: cerebrasKey, baseUrl: 'https://api.cerebras.ai/v1', model: 'llama3.1-8b' }
+        : groqKey
+        ? { key: groqKey, baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' }
+        : null;
 
     // ── LLM extraction path ────────────────────────────────────────────────
-    if (apiKey) {
+    if (provider) {
       try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+        const response = await fetch(`${provider.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'Authorization': `Bearer ${provider.key}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model,
+            model: provider.model,
             messages: [
               {
                 role: 'system',

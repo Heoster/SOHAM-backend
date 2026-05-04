@@ -309,6 +309,95 @@ export async function generateWithSmartFallback(
 }
 
 /**
+ * Streaming smart fallback — yields tokens from the first model that supports streaming.
+ * Falls back to non-streaming models if needed, yielding the full text as one chunk.
+ * Returns metadata (modelUsed, fallbackTriggered) via the returned promise.
+ */
+export async function* streamWithSmartFallback(
+  request: Omit<GenerateRequest, 'model'> & {
+    preferredModelId?: string;
+    category?: ModelCategory;
+  },
+  onModelSelected?: (modelId: string) => void
+): AsyncGenerator<string, { modelUsed: string; fallbackTriggered: boolean }, unknown> {
+  const registry = getModelRegistry();
+  const startTime = Date.now();
+  const MAX_TOTAL_TIME = 55000;
+
+  // Build model list (same logic as generateWithSmartFallback)
+  let modelsToTry: ModelConfig[] = [];
+
+  if (request.preferredModelId) {
+    const preferred = registry.getModel(request.preferredModelId);
+    if (preferred && registry.isModelAvailable(request.preferredModelId)) {
+      modelsToTry.push(preferred);
+    }
+  }
+
+  if (request.category) {
+    const categoryModels = getFallbackModels(request.category);
+    modelsToTry.push(...categoryModels.filter(m => !modelsToTry.some(e => e.id === m.id)));
+  }
+
+  if (modelsToTry.length === 0) {
+    modelsToTry = registry.getAvailableModels();
+  }
+
+  if (modelsToTry.length === 0) {
+    throw new Error('No models available. Please check your API key configuration.');
+  }
+
+  const maxModelsToTry = Math.min(modelsToTry.length, 6);
+
+  for (let i = 0; i < maxModelsToTry; i++) {
+    const model = modelsToTry[i];
+
+    if (Date.now() - startTime > MAX_TOTAL_TIME) {
+      throw new Error('Request timeout - exceeded maximum processing time');
+    }
+
+    if (!validateContextWindow(request.prompt, request.history || [], model)) {
+      continue;
+    }
+
+    const adapter = getAdapter(model.provider);
+
+    try {
+      console.log(`[Stream] Attempting ${model.name} (${model.id})...`);
+      onModelSelected?.(model.id);
+
+      if (adapter.generateStream) {
+        // Manual iteration instead of yield* so mid-stream errors are caught
+        // and we can fall back to the next model
+        const subGen = adapter.generateStream({ ...request, model });
+        let next = await subGen.next();
+        while (!next.done) {
+          yield next.value;
+          next = await subGen.next();
+        }
+      } else {
+        // Adapter doesn't support streaming — generate() and yield full text at once
+        const response = await adapter.generate({ ...request, model });
+        yield response.text;
+      }
+
+      return { modelUsed: model.id, fallbackTriggered: i > 0 };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Stream] Failed with ${model.name}:`, errorMessage);
+
+      if (i < maxModelsToTry - 1) {
+        continue; // try next model
+      }
+
+      throw new Error(`All models failed. Last error: ${errorMessage}`);
+    }
+  }
+
+  throw new Error('Failed to generate streaming response with any available model');
+}
+
+/**
  * Get a user-friendly error message
  */
 export function getFriendlyErrorMessage(error: unknown): string {

@@ -131,8 +131,10 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
   const id = `realworld:${result.type}:${Date.now()}:${randomUUID().slice(0, 8)}`;
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + result.ttlHours * 3_600_000).toISOString();
-  const text = `[${result.type.toUpperCase()} — ${result.fetchedAt}] ${result.content}`;
-  const vector = await generateEmbedding(text.slice(0, 1500));
+  // Keep content short — Upstash has a ~40KB per-request limit and the
+  // embedding vector alone is ~24KB, so data must stay under ~800 chars.
+  const text = `[${result.type.toUpperCase()} — ${result.fetchedAt}] ${result.content.slice(0, 600)}`;
+  const vector = await generateEmbedding(text.slice(0, 512));
 
   try {
     await upstashPost('/upsert', {
@@ -143,12 +145,14 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
           namespace: 'realworld',
           type: result.type,
           source: result.source,
-          query: result.query.slice(0, 100),
+          query: result.query.slice(0, 80),
           fetched_at: result.fetchedAt,
           expires_at: expiresAt,
           ttl_hours: result.ttlHours,
+          // Store a short preview in metadata instead of full data field
+          preview: text.slice(0, 300),
         },
-        data: text.slice(0, 1500),
+        // data field omitted — use metadata.preview for retrieval
       }],
     });
   } catch (err) {
@@ -199,7 +203,15 @@ export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<
       if (expiresAt && expiresAt < now) return false;
       return (m.score ?? 0) >= 0.40;
     })
-    .map((m: any) => typeof m.data === 'string' ? m.data : '')
+    .map((m: any) => {
+      // Support both old `data` field and new `metadata.preview`
+      const text = typeof m.data === 'string' && m.data.length > 0
+        ? m.data
+        : typeof m.metadata?.preview === 'string'
+        ? m.metadata.preview
+        : '';
+      return text;
+    })
     .filter(t => t.length > 0)
     .slice(0, topK);
 }

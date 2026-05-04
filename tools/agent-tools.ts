@@ -89,18 +89,46 @@ export function detectToolIntent(message: string): ToolIntent | null {
     }
   }
 
-  if (/\b(weather|temperature|forecast|rain|humidity)\b/i.test(lower)) {
+  // ── Weather — including typos ─────────────────────────────────────────────
+  if (/\b(weather|temperature|forecast|rain|humidity|mausam|baarish|tapman|garmi|thand|wether|wheather|forcast|temprature)\b/i.test(lower)) {
     return { tool: 'weather_search', query: sanitizeQuery(normalized) };
   }
-  if (/\b(cricket|match|matches|score|live score|ipl|sports)\b/i.test(lower)) {
+
+  // ── Sports ────────────────────────────────────────────────────────────────
+  if (/\b(cricket|match|matches|score|live score|ipl|sports|football|soccer|tournament|league)\b/i.test(lower)) {
     return { tool: 'sports_search', query: sanitizeQuery(normalized) };
   }
-  if (/\b(stock|stocks|crypto|bitcoin|btc|ethereum|eth|price of|market cap|nifty|sensex)\b/i.test(lower)) {
+
+  // ── Finance — including typos and single-word ─────────────────────────────
+  if (/\b(stock|stocks|crypto|bitcoin|btc|ethereum|eth|price of|market cap|nifty|sensex|gold price|silver price|oil price|prise|prce|prcie)\b/i.test(lower) ||
+      /^(bitcoin|btc|ethereum|eth|crypto|stocks?|nifty|sensex|gold|silver|oil)$/i.test(lower.trim())) {
     return { tool: 'finance_search', query: sanitizeQuery(normalized) };
   }
-  if (/\b(news|headlines|latest updates|breaking)\b/i.test(lower)) {
+
+  // ── News — explicit keywords + typos ─────────────────────────────────────
+  if (/\b(news|headlines|latest updates|breaking|khabar|samachar|taza khabar|newss?|headlins?|breakng)\b/i.test(lower)) {
     return { tool: 'news_search', query: sanitizeQuery(normalized) };
   }
+
+  // ── News — temporal "what happened" patterns (the main gap) ───────────────
+  // Catches: "what happened today", "what's going on in the world",
+  //          "what happened in the last few hours/days", "recent events",
+  //          "anything new", "world events", "global news", etc.
+  if (
+    /\b(what('?s| is| has)?\s+(happening|going on|new|occurred|happened))\b/i.test(lower) ||
+    /\b(happened|happening|occurred|going on)\b.{0,40}\b(world|today|recently|last (few )?(hours?|days?|minutes?|weeks?))\b/i.test(lower) ||
+    /\b(last (few )?(hours?|days?|minutes?|weeks?)|past (few )?(hours?|days?|minutes?|weeks?))\b/i.test(lower) ||
+    /\b(recent events?|world events?|global events?|current events?|today'?s? events?)\b/i.test(lower) ||
+    /\b(anything (new|happening|interesting)|what'?s? new|catch me up|fill me in|update me)\b/i.test(lower) ||
+    /\b(world (news|update|situation|today)|global (news|update|situation))\b/i.test(lower) ||
+    /\b(duniya mein|aaj kya hua|kya ho raha hai|duniya ka haal|taza khabar|abhi kya chal raha)\b/i.test(lower) ||
+    /\b(kya chal raha|kya ho raha|kya hua|kya hoga|kya chalega|kya scene hai|scene kya hai|haal kya hai)\b/i.test(lower) ||
+    /\btell me about\b.{0,30}\b(recent|latest|today|current|world|global|breaking)\b.{0,30}\b(events?|news|updates?|happenings?)\b/i.test(lower)
+  ) {
+    return { tool: 'news_search', query: sanitizeQuery(normalized) || 'world news today' };
+  }
+
+  // ── General web search — current/live/factual ─────────────────────────────
   if (
     /\b(current|latest|today|live|recent)\b/i.test(lower) ||
     /\b(vice president of|prime minister of|president of|ceo of|founder of|governor of|population of|capital of|currency of)\b/i.test(lower) ||
@@ -111,35 +139,37 @@ export function detectToolIntent(message: string): ToolIntent | null {
   if (/\b(search|look up|find on web|web search|research)\b/i.test(lower)) {
     return { tool: 'web_search', query: sanitizeQuery(normalized) };
   }
-  // Translate
-  if (/\b(translate|translation|in (spanish|french|hindi|german|japanese|chinese|arabic|portuguese|russian|korean|italian|turkish|dutch|polish|swedish|norwegian|danish|finnish|greek|hebrew|thai|vietnamese|indonesian|malay|bengali|urdu|tamil|telugu|marathi|gujarati|punjabi|kannada|malayalam))\b/i.test(lower)) {
+
+  // ── Translate — including typos ───────────────────────────────────────────
+  if (/\b(translate|translation|tranlsate|translat|anuvad|in (spanish|french|hindi|german|japanese|chinese|arabic|portuguese|russian|korean|italian|turkish|dutch|polish|swedish|norwegian|danish|finnish|greek|hebrew|thai|vietnamese|indonesian|malay|bengali|urdu|tamil|telugu|marathi|gujarati|punjabi|kannada|malayalam))\b/i.test(lower)) {
     return { tool: 'translate', query: sanitizeQuery(normalized) };
   }
-  // Sentiment
+  // ── Sentiment ─────────────────────────────────────────────────────────────
   if (/\b(sentiment|emotion|tone|feeling|mood|analyze (this|the|my) (text|message|review|comment))\b/i.test(lower)) {
     return { tool: 'sentiment', query: sanitizeQuery(normalized) };
   }
-  // Grammar
+  // ── Grammar ───────────────────────────────────────────────────────────────
   if (/\b(grammar|proofread|correct (my|this|the) (text|writing|essay|email|message)|fix (my|this|the) (grammar|spelling|writing))\b/i.test(lower)) {
     return { tool: 'grammar', query: sanitizeQuery(normalized) };
   }
-  // Quiz
+  // ── Quiz ──────────────────────────────────────────────────────────────────
   if (/\b(quiz|flashcard|make (a|some) (quiz|questions|flashcards)|test me on|study (guide|material))\b/i.test(lower)) {
     return { tool: 'quiz', query: sanitizeQuery(normalized) };
   }
-  // Recipe
+  // ── Recipe ────────────────────────────────────────────────────────────────
   if (/\b(recipe|how (to|do i) (cook|make|bake|prepare)|ingredients for|dish|meal|food idea)\b/i.test(lower)) {
     return { tool: 'recipe', query: sanitizeQuery(normalized) };
   }
-  // Joke
-  if (/\b(tell (me )?(a )?(joke|pun|riddle|fun fact)|make me laugh|roast me|give me a (joke|pun|riddle))\b/i.test(lower)) {
+  // ── Joke — including Hinglish ─────────────────────────────────────────────
+  if (/\b(tell (me )?(a )?(joke|pun|riddle|fun fact)|write (me )?(a )?(joke|pun)|give me (a )?(joke|pun|riddle)|make me laugh|roast me|give me a (joke|pun|riddle))\b/i.test(lower) ||
+      /\b(sunao|suna|ek joke|ek chutkula|mujhe.*joke|mujhe.*chutkula|mujhe.*hasao|chutkula sunao|joke sunao)\b/i.test(lower)) {
     return { tool: 'joke', query: sanitizeQuery(normalized) };
   }
-  // Dictionary
+  // ── Dictionary ────────────────────────────────────────────────────────────
   if (/\b(define|definition of|what does .+ mean|meaning of|synonym(s)? (of|for)|antonym(s)? (of|for)|etymology of)\b/i.test(lower)) {
     return { tool: 'dictionary', query: sanitizeQuery(normalized) };
   }
-  // Fact check
+  // ── Fact check ────────────────────────────────────────────────────────────
   if (/\b(fact.?check|is it true (that)?|verify (that|this|the claim)|debunk|myth or fact|true or false)\b/i.test(lower)) {
     return { tool: 'fact_check', query: sanitizeQuery(normalized) };
   }

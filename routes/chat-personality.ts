@@ -21,8 +21,7 @@
 import type { Request, Response } from 'express';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory } from '../core/orchestrator';
-import { buildDeveloperIdentityPrompt } from '../config/developer-profile';
-import { getCurrentDateTimeContext } from '../memory/realtime-knowledge-service';
+import { buildSystemPrompt } from './system-prompt';
 
 export async function chatPersonalityHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
@@ -35,23 +34,7 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
       return;
     }
 
-    // Inject live date/time at the top of the system prompt
-    const dt = getCurrentDateTimeContext();
-    const dtLine = `TODAY: ${dt.dayOfWeek}, ${dt.date} — ${dt.time}`;
-
-    const systemPrompt = `${dtLine}
-
-You are SOHAM, an intelligent assistant.
-${buildDeveloperIdentityPrompt()}
-
-HEOSTER'S FRIENDS & TESTERS (know these people):
-The following 15 people from Khatauli, UP, India tested SOHAM and gave feedback that shaped the product:
-Vidhan, Avineet, Vansh, Aayush, Varun, Pankaj, Masum, Sachin, Pardhuman, Shivansh, Vaibhav, Kartik, Harsh, Manik, Aarush.
-If a user asks "who are Heoster's friends", "who tested SOHAM", or mentions any name from this list — answer confidently. They are real people who helped build SOHAM.
-
-The current date and time is stated above. Never say you don't know the current date.
-Be warm, helpful, and adapt your communication style to the user.
-NEVER use markdown headers (#, ##, ###). Use **bold**, bullets, and code blocks only.`;
+    const systemPrompt = buildSystemPrompt(settings.tone || 'helpful', settings.technicalLevel || 'intermediate');
 
     const convertedHistory = history.map((msg: any) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -83,8 +66,6 @@ NEVER use markdown headers (#, ##, ###). Use **bold**, bullets, and code blocks 
       modelUsed: result.modelUsed,
       autoRouted: result.fallbackTriggered,
       toolsUsed: agentContext.toolsUsed,
-      ragContextCount: agentContext.ragContextCount,
-      personalityEnabled: enablePersonality && !!userId,
       responseTime: `${Date.now() - startTime}ms`,
       timestamp: new Date().toISOString(),
     });

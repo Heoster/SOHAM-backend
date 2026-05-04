@@ -98,13 +98,14 @@ export class UpstashKnowledgeService {
       return null;
     }
 
-    const text = entry.question
-      ? `Q: ${entry.question}\nA: ${entry.content}`
-      : entry.content;
+    // Short text for dedup check and embedding — keep under 512 chars
+    const dedupText = entry.question
+      ? `Q: ${entry.question.slice(0, 200)}\nA: ${entry.content.slice(0, 200)}`
+      : entry.content.slice(0, 400);
 
     // Dedup check — skip if very similar entry already exists
     try {
-      const existing = await this.searchKnowledge(text, 1, 0.92);
+      const existing = await this.searchKnowledge(dedupText, 1, 0.92);
       if (existing.length > 0) {
         console.log('[Knowledge] Near-duplicate found, skipping store');
         return existing[0].entry.id;
@@ -115,7 +116,11 @@ export class UpstashKnowledgeService {
 
     const id = `public:${entry.type.toLowerCase()}:${Date.now()}:${randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
-    const vector = await generateEmbedding(text.slice(0, 1500));
+    // Keep text short — embedding vector is ~24KB, so data must stay small
+    const storeText = entry.question
+      ? `Q: ${entry.question.slice(0, 200)}\nA: ${entry.content.slice(0, 400)}`
+      : entry.content.slice(0, 500);
+    const vector = await generateEmbedding(storeText.slice(0, 512));
 
     try {
       await upstashFetch('/upsert', {
@@ -124,19 +129,21 @@ export class UpstashKnowledgeService {
           vector,
           metadata: {
             type: entry.type,
-            question: entry.question ?? '',
+            question: (entry.question ?? '').slice(0, 200),
             source: entry.source ?? 'system',
             confidence: entry.confidence,
             usage_count: 0,
             created_at: now,
             tags: (entry.tags ?? []).join(','),
             namespace: 'public',
+            // Store content in metadata to avoid data field size issues
+            content_preview: entry.content.slice(0, 400),
           },
-          data: text.slice(0, 1500),
+          // data field omitted to keep payload under Upstash's ~40KB limit
         }],
       });
 
-      console.log(`[Knowledge] Stored ${entry.type}: ${text.slice(0, 80)}...`);
+      console.log(`[Knowledge] Stored ${entry.type}: ${storeText.slice(0, 80)}...`);
       return id;
     } catch (err) {
       console.warn('[Knowledge] Store failed:', err);
@@ -200,7 +207,11 @@ export class UpstashKnowledgeService {
 
         const score = similarity * 0.70 + confidence * 0.20 + recency * 0.10;
 
-        const rawText = typeof m.data === 'string' ? m.data : '';
+        const rawText = typeof m.data === 'string' && m.data.length > 0
+          ? m.data
+          : typeof m.metadata?.content_preview === 'string'
+          ? m.metadata.content_preview
+          : '';
         const tagsRaw = m.metadata?.tags as string | undefined;
 
         const entry: PublicKnowledgeEntry = {

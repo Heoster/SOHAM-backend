@@ -117,13 +117,17 @@ function setCached(query: string, result: SearchPipelineResult): void {
 export function analyzeQuery(query: string): QueryAnalysisResult {
   const lower = query.toLowerCase().trim();
 
+  // "how to make pasta" — procedural "how to" queries are general, not factual
+  const isHowTo = /^how (to|do i|can i|should i)\b/i.test(lower);
   const isNews     = /\b(news|headlines|breaking|latest|today|yesterday|this week|announcement|update|report|story|article|khabar|samachar|aatki|jankari|suchana)\b/i.test(lower);
   const isWeather  = /\b(weather|temperature|forecast|rain|humidity|wind|sunny|cloudy|snow|storm|climate|hot|cold|mausam|baarish|tapman|dhup|thand|garmi)\b/i.test(lower);
   const isFinance  = /\b(stock|price|crypto|bitcoin|ethereum|market|nifty|sensex|nasdaq|dow|forex|usd|inr|eur|share|invest|trading|fund|ipo|dam|bhav|kimat|paise|paisa|kharch|kamai)\b/i.test(lower);
   const isSports   = /\b(cricket|football|soccer|ipl|match|score|live|tournament|league|team|player|goal|wicket|run|innings|series|khel|khiladi|jeet|haar|kaun jeeta)\b/i.test(lower);
   const isTimeSens = /\b(today|now|current|live|latest|recent|breaking|right now|this (week|month|year)|just|happening|ongoing|aaj|abhi|turant|hal hi me|abhi ka)\b/i.test(lower);
-  const isFactual  = /\b(who|what|when|where|why|how|define|explain|meaning|history|invented|founded|capital|population|born|died|created|discovered|wrote|built|designed|located|based|kaun|kya|kab|kaha|kyu|kaise|kisne|matlab|arth|itihas|vivarana|vistar|fayde|nuksan|khoj)\b/i.test(lower)
-    || /^(is |are |was |were |does |do |did |has |have |had |can |could |should |would |kya |kaise |kaun |kab |kaha )/i.test(lower);
+  const isFactual  = !isHowTo && (
+    /\b(who|what|when|where|why|how|define|explain|meaning|history|invented|founded|capital|population|born|died|created|discovered|wrote|built|designed|located|based|kaun|kya|kab|kaha|kyu|kaise|kisne|matlab|arth|itihas|vivarana|vistar|fayde|nuksan|khoj)\b/i.test(lower)
+    || /^(is |are |was |were |does |do |did |has |have |had |can |could |should |would |kya |kaise |kaun |kab |kaha )/i.test(lower)
+  );
 
   let queryType: QueryType = 'general';
   if (isWeather)       queryType = 'weather';

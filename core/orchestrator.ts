@@ -172,41 +172,37 @@ export async function buildSohamPromptContext(input: {
   const allRealtimeContent = [
     ...realtimeChunks,
     ...liveDataItems
-      .filter(d => d.source !== 'upstash-cache') // avoid duplicating cached chunks
+      .filter(d => d.source !== 'upstash-cache')
       .map(d => d.content),
   ].filter(Boolean);
 
   if (allRealtimeContent.length > 0) {
     contextBlocks.push(
-      `[REALTIME DATA — live information fetched now]\n` +
+      `Live data:\n` +
       allRealtimeContent.map((c, i) => `${i + 1}. ${c.slice(0, 400)}`).join('\n\n')
     );
   }
 
-  // ── LAYER 1: Tool results (weather, news, sports, finance, web search) ────
+  // ── LAYER 1: Tool results ─────────────────────────────────────────────────
   if (toolResult) {
     contextBlocks.push(
-      `[TOOL: ${toolResult.tool}]\n` +
-      `Query: ${toolResult.query}\n` +
-      `Status: ${toolResult.ok ? 'ok' : 'error'}\n` +
+      `${toolResult.ok ? 'Current data' : 'Data lookup'}:\n` +
       `${toolResult.output}`
     );
   }
 
-  // ── LAYER 2: User profile ─────────────────────────────────────────────────
+  // ── LAYER 2: User profile — injected as silent background knowledge ───────
   if (userProfile) {
     const profileContext = profileService.buildProfileContext(userProfile);
     if (profileContext.trim().length > 0) {
-      contextBlocks.push(
-        `[USER PROFILE — personalise your response using this]\n${profileContext}`
-      );
+      contextBlocks.push(`About this user:\n${profileContext}`);
     }
   }
 
-  // ── LAYER 3: Long-term memory ─────────────────────────────────────────────
+  // ── LAYER 3: Long-term memory — injected as silent background knowledge ───
   if (longTermMemories.length > 0) {
     contextBlocks.push(
-      `[LONG-TERM MEMORY — what I know about this user]\n` +
+      `What you know about this user:\n` +
       longTermMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')
     );
   }
@@ -215,31 +211,31 @@ export async function buildSohamPromptContext(input: {
   if (crossDeviceHistory.length > 0) {
     const historyText = crossDeviceHistory
       .slice(-4)
-      .map(m => `${m.role === 'user' ? 'User' : 'SOHAM'}: ${m.content}`)
+      .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n');
-    contextBlocks.push(`[SHORT-TERM MEMORY — recent conversation history]\n${historyText}`);
+    contextBlocks.push(`Recent conversation:\n${historyText}`);
   }
 
   // ── LAYER 5: Semantic RAG snippets ────────────────────────────────────────
   if (ragSnippets.length > 0) {
     contextBlocks.push(
-      `[SEMANTIC MEMORY — relevant past context]\n` +
+      `Relevant context:\n` +
       ragSnippets.map((x, i) => `${i + 1}. ${x}`).join('\n')
     );
   }
 
-  // ── LAYER 6: Public knowledge (corrections, suggestions, FAQs) ───────────
+  // ── LAYER 6: Public knowledge ─────────────────────────────────────────────
   if (publicKnowledge.length > 0) {
     const knowledgeText = knowledgeService.formatForPrompt(publicKnowledge);
-    contextBlocks.push(
-      `[PUBLIC KNOWLEDGE — verified facts, corrections & suggestions]\n${knowledgeText}`
-    );
+    contextBlocks.push(`Verified knowledge:\n${knowledgeText}`);
   }
 
   // ── Assemble final prompt ─────────────────────────────────────────────────
+  // Context is framed as background knowledge the model already has —
+  // NOT as external sources it should reference or cite.
   const prompt = contextBlocks.length === 0
     ? message
-    : `${message}\n\n---\n${dtLine}\n\nMemory & knowledge context (use when relevant, don't mention sources unless asked):\n\n${contextBlocks.join('\n\n')}`;
+    : `${message}\n\n---\n${dtLine}\n\nBackground context (use naturally to inform your response — do NOT mention, cite, or reference any of these sources):\n\n${contextBlocks.join('\n\n')}`;
 
   return {
     prompt,

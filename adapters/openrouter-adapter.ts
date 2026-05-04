@@ -24,6 +24,13 @@ interface OpenRouterResponse {
   };
 }
 
+interface OpenRouterStreamChunk {
+  choices?: Array<{
+    delta?: { content?: string };
+    finish_reason?: string | null;
+  }>;
+}
+
 export class OpenRouterAdapter extends BaseProviderAdapter {
   readonly provider = 'openrouter' as const;
 
@@ -98,6 +105,78 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
         throw createUserFriendlyError(new Error('Request timeout'), 'openrouter', model.id);
       }
       throw createUserFriendlyError(error, 'openrouter', model.id);
+    }
+  }
+
+  /**
+   * Stream tokens from OpenRouter using SSE (OpenAI-compatible stream=true)
+   */
+  async *generateStream(request: GenerateRequest): AsyncGenerator<string, void, unknown> {
+    const { model, prompt, systemPrompt, history, params } = request;
+    const mergedParams = this.mergeParams(model, params);
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) throw createUserFriendlyError(new Error('OPENROUTER_API_KEY not configured'), 'openrouter', model.id);
+
+    const messages = this.buildMessages(prompt, systemPrompt, history);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
+
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        'X-Title': 'SOHAM',
+      },
+      body: JSON.stringify({
+        model: model.modelId,
+        messages,
+        temperature: mergedParams.temperature,
+        top_p: mergedParams.topP,
+        max_tokens: mergedParams.maxOutputTokens,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok || !response.body) {
+      const errorText = await response.text().catch(() => '');
+      throw createUserFriendlyError(new Error(`OpenRouter error ${response.status}: ${errorText}`), 'openrouter', model.id);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') return;
+          try {
+            const chunk = JSON.parse(data) as OpenRouterStreamChunk;
+            const token = chunk.choices?.[0]?.delta?.content;
+            if (token) yield token;
+          } catch {
+            // malformed chunk — skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
     }
   }
 

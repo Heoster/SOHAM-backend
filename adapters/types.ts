@@ -33,7 +33,8 @@ export interface ProviderAdapter {
   readonly provider: ProviderType;
   isAvailable(): boolean;
   generate(request: GenerateRequest): Promise<GenerateResponse>;
-  generateStream?(request: GenerateRequest): AsyncIterable<string>;
+  /** Optional: stream tokens as they arrive. Falls back to generate() if not implemented. */
+  generateStream?(request: GenerateRequest): AsyncGenerator<string, void, unknown>;
 }
 
 export abstract class BaseProviderAdapter implements ProviderAdapter {

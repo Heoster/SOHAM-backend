@@ -45,6 +45,7 @@ import { rateLimitMiddleware } from './middleware/rate-limit';
 // ── Route handlers ─────────────────────────────────────────────────────────────
 import { chatHandler } from './routes/chat';
 import { chatPersonalityHandler } from './routes/chat-personality';
+import { chatStreamHandler } from './routes/chat-stream';
 import { searchHandler } from './routes/ai/search';
 import { solveHandler } from './routes/ai/solve';
 import { summarizeHandler } from './routes/ai/summarize';
@@ -201,6 +202,8 @@ app.get('/api/health', healthHandler);
 // ── Chat (60s timeout) ─────────────────────────────────────────────────────────
 app.post('/api/chat',             withTimeout(chatHandler,            60_000));
 app.post('/api/chat/personality', withTimeout(chatPersonalityHandler, 60_000));
+// SSE streaming — no withTimeout wrapper (SSE keeps connection open)
+app.post('/api/chat/stream',      chatStreamHandler);
 
 // ── AI Tools (60s timeout) ────────────────────────────────────────────────────
 app.post('/api/ai/search',       withTimeout(searchHandler,      60_000));
@@ -241,7 +244,7 @@ app.post('/api/memory/knowledge/suggestion',   storeSuggestionHandler);
 // ── 405 Method Not Allowed ────────────────────────────────────────────────────
 // Catches requests to known paths with the wrong HTTP method
 const knownPaths = new Set([
-  '/api/health', '/api/chat', '/api/chat/personality',
+  '/api/health', '/api/chat', '/api/chat/personality', '/api/chat/stream',
   '/api/ai/search', '/api/ai/solve', '/api/ai/summarize',
   '/api/ai/image-solver', '/api/ai/pdf-analyzer',
   '/api/ai/translate', '/api/ai/sentiment', '/api/ai/classify',
