@@ -236,7 +236,7 @@ export class IntentDetector {
   private detectImageGeneration(lower: string, contextualMessage: string, rawMessage: string): IntentResult {
     const patterns = [
       // Explicit generate/create/make + image noun
-      { regex: /\b(generate|create|make|draw|paint|design|produce|banao|dikhao|chitra|tasveer|photo)\s+(an?|the|me|a)?\s*(image|picture|photo|illustration|artwork|graphic|pic|painting|sketch|drawing|wallpaper|poster|logo|banner|thumbnail|avatar|portrait|landscape|scene|render)\b/i, weight: 0.99 },
+      { regex: /\b(generate|create|make|draw|paint|design|produce|banao|dikhao|chitra|tasveer|photo)\s+(an?|the|me|a)?\s*(image|picture|photo|illustration|artwork|graphic|pic|painting|sketch|drawing|wallpaper|poster|logo|banner|thumbnail|avatar|portrait|landscape|scene|render|card|flyer)\b/i, weight: 0.99 },
       // Draw/paint/sketch/render me
       { regex: /\b(draw|paint|sketch|illustrate|render|visualize|imagine|depict)\s+(me|a|an|the|this|that)?\b/i, weight: 0.97 },
       // Image of / picture of / photo of
@@ -250,9 +250,23 @@ export class IntentDetector {
       // Hinglish image requests
       { regex: /\b(tasveer|chitra|photo|pic)\s+(bana|banao|dikhao|chahiye|chahie)\b/i, weight: 0.98 },
       // "create a visual" / "generate a visual"
-      { regex: /\b(create|generate|make|produce)\s+(a\s+)?(visual|graphic|render|artwork|illustration|wallpaper|poster|logo|banner|thumbnail|avatar)\b/i, weight: 0.96 },
+      { regex: /\b(create|generate|make|produce)\s+(a\s+)?(visual|graphic|render|artwork|illustration|wallpaper|poster|logo|banner|thumbnail|avatar|greeting card|wish card|birthday card|anniversary card)\b/i, weight: 0.96 },
       // Standalone "generate image" or "image generate"
       { regex: /\b(generate\s+image|image\s+generate|create\s+image|image\s+create|make\s+image|image\s+maker)\b/i, weight: 0.99 },
+
+      // ── POSTER / CARD / WISH requests (the main gap being fixed) ──────────
+      // "generate a poster for X"
+      { regex: /\b(generate|create|make|design|produce)\s+(a\s+)?(poster|banner|flyer|card|greeting card|wish card|e-?card)\b/i, weight: 0.99 },
+      // "poster to wish" / "poster for anniversary" / "poster for birthday"
+      { regex: /\b(poster|banner|card|flyer)\s+(to\s+)?(wish|for|celebrating|about|on)\b/i, weight: 0.98 },
+      // "wish poster" / "anniversary poster" / "birthday poster"
+      { regex: /\b(wish|birthday|anniversary|wedding|graduation|diwali|eid|christmas|holi|farewell|congratulations)\s+(poster|banner|card|image|picture|graphic|flyer)\b/i, weight: 0.99 },
+      // "poster for [name]" or "poster for my friend"
+      { regex: /\b(poster|banner|card|flyer)\s+(for\s+)?(my\s+)?(friend|brother|sister|mom|dad|wife|husband|partner|colleague|[A-Z][a-z]+)\b/i, weight: 0.97 },
+      // "happy birthday poster" / "happy anniversary image"
+      { regex: /\bhappy\s+(birthday|anniversary|diwali|eid|holi|new year|christmas)\s+(poster|banner|card|image|picture|graphic|flyer|wallpaper)\b/i, weight: 0.99 },
+      // "create a wish image" / "make a celebration graphic"
+      { regex: /\b(create|make|generate|design)\s+(a\s+)?(wish|celebration|festive|greeting|congratulation)\s+(image|picture|graphic|poster|card|banner)\b/i, weight: 0.98 },
     ];
 
     let maxConfidence = 0;

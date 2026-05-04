@@ -12,6 +12,7 @@
 
 import { cfGenerateImage } from './cloudflare-ai';
 import { uploadImageToSupabase } from './supabase-storage';
+import { engineerImagePrompt } from './image-prompt-engineer';
 
 export interface SOHAMImageRequest {
   userPrompt: string;
@@ -34,15 +35,28 @@ export class SOHAMImagePipeline {
 
   // ─── PROMPT BUILDER ───────────────────────────────────────────────────────────
 
-  private buildPrompt(raw: string, style?: string): string {
-    const guides: Record<string, string> = {
+  /**
+   * Transforms a natural language image request into a rich visual prompt.
+   * Uses the ImagePromptEngineer for structured classification + enrichment,
+   * then optionally appends a style guide.
+   */
+  private buildPrompt(raw: string, style?: string): { prompt: string; aspectRatio: string } {
+    // Run through the prompt engineer first
+    const engineered = engineerImagePrompt(raw);
+    let prompt = engineered.positive;
+
+    // If user explicitly specified a style override, append it
+    const styleGuides: Record<string, string> = {
       realistic: 'Photorealistic, high detail, natural lighting, professional photography.',
       artistic:  'Artistic, painterly, expressive brushstrokes, vibrant colors.',
       anime:     'Anime art style, clean lines, cel-shaded, vibrant colors, Japanese animation aesthetic.',
       sketch:    'Pencil sketch, hand-drawn, artistic linework, monochrome or light shading.',
     };
-    const guide = style ? (guides[style] ?? '') : '';
-    return guide ? `${raw}. ${guide}` : raw;
+    if (style && styleGuides[style]) {
+      prompt = `${prompt}. ${styleGuides[style]}`;
+    }
+
+    return { prompt, aspectRatio: engineered.aspectRatio };
   }
 
   // ─── PROVIDER 1: Cloudflare Workers AI (flux-1-schnell) ───────────────────────
@@ -132,8 +146,9 @@ export class SOHAMImagePipeline {
 
   async generate(request: SOHAMImageRequest): Promise<SOHAMImageResult> {
     const startTime = Date.now();
-    const enhancedPrompt = this.buildPrompt(request.userPrompt, request.style);
-    const aspectRatio = request.aspectRatio ?? '1:1';
+    const { prompt: enhancedPrompt, aspectRatio: engineeredAspectRatio } = this.buildPrompt(request.userPrompt, request.style);
+    // User-specified aspect ratio overrides the engineered one
+    const aspectRatio = request.aspectRatio ?? engineeredAspectRatio;
 
     let dataUrl: string | null = null;
     let provider: 'cloudflare' | 'pollinations' | 'huggingface' = 'pollinations';

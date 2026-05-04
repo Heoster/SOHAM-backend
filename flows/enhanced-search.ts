@@ -50,12 +50,12 @@ export async function enhancedSearch(input: EnhancedSearchInput): Promise<Enhanc
 4. Include specific facts, numbers, and dates when relevant
 5. If the information might be time-sensitive, mention when it was last updated
 6. If you find conflicting information, acknowledge it and present the most reliable source
+7. Always complete your explanation — never cut off mid-answer
 
 ## Response Format
-- Start with a direct answer to the question
-- Provide supporting details and context
+- Start with a direct, complete answer to the question
+- Provide all necessary supporting details and context — don't stop early
 - Use bullet points or numbered lists for multiple items
-- Keep the response informative but concise
 - Cite sources when making specific claims`;
 
   const prompt = searchResults 
@@ -71,7 +71,7 @@ export async function enhancedSearch(input: EnhancedSearchInput): Promise<Enhanc
       params: {
         temperature: 0.5,
         topP: 0.9,
-        maxOutputTokens: 2048,
+        maxOutputTokens: 3072,
       },
     });
 

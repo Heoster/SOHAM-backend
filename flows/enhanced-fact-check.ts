@@ -76,7 +76,7 @@ Be objective and cite specific evidence. Include 3-5 evidence points.`;
     systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
-    params: { temperature: 0.2, maxOutputTokens: 2048 },
+    params: { temperature: 0.2, maxOutputTokens: 3072 },
   });
 
   try {

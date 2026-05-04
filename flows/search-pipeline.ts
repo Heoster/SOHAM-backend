@@ -101,19 +101,20 @@ function buildSynthesisPrompt(query: string, results: SearchResult[], abstract?:
   return lines.join('\n');
 }
 
-const SYNTHESIS_SYSTEM_PROMPT = `You are SOHAM's search synthesis engine. Your job is to produce accurate, well-structured answers from web search results.
+const SYNTHESIS_SYSTEM_PROMPT = `You are SOHAM's search synthesis engine. Your job is to produce accurate, complete answers from web search results.
 
 Rules:
 - Use ONLY information from the provided search results
 - Cite sources inline using [1], [2], [3] notation
 - If results are insufficient, say so clearly and answer from training knowledge
-- Start with a direct answer, then provide supporting details
+- Start with a direct answer, then provide all necessary supporting details — do not cut off early
 - Use bullet points for lists, bold for key terms
 - NEVER use markdown headers (# ## ###)
-- Calibrate length to the query: simple factual questions get 1-3 sentences; complex topics get up to 500 words
+- Calibrate length to the query: simple factual questions get 2–4 sentences; complex topics get as many paragraphs as needed to fully answer
 - If the query is time-sensitive, mention the date/recency of sources
-- For news queries, summarize the key facts from multiple sources
-- For factual queries, be precise and cite the most authoritative source first`;
+- For news queries, summarise all key facts from the results — don't stop at one point
+- For factual queries, be precise and cite the most authoritative source first
+- Never truncate an explanation mid-way — always complete the thought`;
 
 function buildCitationBlock(results: SearchResult[]): string {
   if (results.length === 0) return '';
@@ -156,7 +157,7 @@ export async function runFullSearchPipeline(input: SearchPipelineInput): Promise
       params: {
         temperature: 0.3,  // low temp for factual accuracy
         topP: 0.9,
-        maxOutputTokens: 1024,
+        maxOutputTokens: 3072,
       },
     });
     aiAnswer = aiResult.response.text;

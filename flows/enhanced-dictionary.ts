@@ -72,7 +72,7 @@ Provide up to 5 definitions, 8 synonyms, 5 antonyms, and 5 related words.`;
     systemPrompt: withDateTime(systemPrompt),
     preferredModelId: parsed.preferredModel,
     category: 'general',
-    params: { temperature: 0.2, maxOutputTokens: 2048 },
+    params: { temperature: 0.2, maxOutputTokens: 3072 },
   });
 
   try {
