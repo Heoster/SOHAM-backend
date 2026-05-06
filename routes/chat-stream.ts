@@ -22,6 +22,7 @@ import {
 import { getIntentDetector } from '../core/intent-detector';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
+import { resolveAutoRoute } from '../routing/auto-router';
 import { logger } from '../utils/logger';
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
@@ -67,6 +68,20 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
   let clientGone = false;
   res.on('close', () => { clientGone = true; });
 
+  // ── Hard SSE timeout — 5 minutes max ────────────────────────────────────────
+  const SSE_TIMEOUT_MS = 5 * 60_000;
+  const sseTimeout = setTimeout(() => {
+    if (!res.writableEnded) {
+      sseWrite(res, { type: 'error', text: 'Response timeout. Please try again.' });
+      sseEnd(res);
+    }
+  }, SSE_TIMEOUT_MS);
+
+  // ── Single heartbeat — keeps proxies alive, cleared in finally ───────────────
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(': heartbeat\n\n');
+  }, 2000);
+
   try {
     const convertedHistory = history.map((msg: any) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -104,12 +119,6 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     // ── Build context ────────────────────────────────────────────────────────
     sseWrite(res, { type: 'status', text: 'Thinking…' });
 
-    // Send a heartbeat comment every 2s while context builds to keep the
-    // connection alive through proxies and prevent client-side timeouts.
-    const heartbeat = setInterval(() => {
-      if (!res.writableEnded) res.write(': heartbeat\n\n');
-    }, 2000);
-
     let agentContext: Awaited<ReturnType<typeof buildSohamPromptContext>>;
     let systemPrompt: string;
     try {
@@ -130,14 +139,24 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     }
 
     // ── Routing ──────────────────────────────────────────────────────────────
-    const preferredModelId = settings.model && settings.model !== 'auto' ? settings.model : undefined;
-    const intentCategoryMap: Record<string, string> = {
-      CODE_GENERATION: 'coding', EXPLANATION: 'general', TRANSLATION: 'general',
-      SENTIMENT_ANALYSIS: 'general', GRAMMAR_CHECK: 'general', QUIZ_GENERATION: 'general',
-      RECIPE: 'general', JOKE: 'general', DICTIONARY: 'general',
-      FACT_CHECK: 'general', WEB_SEARCH: 'general', CHAT: 'general',
-    };
-    const routingCategory = (intentCategoryMap[intent.intent] ?? 'general') as any;
+    // Auto mode: pick the best model per intent.
+    // Manual mode: honour the user's explicit model choice.
+    const isAutoMode = !settings.model || settings.model === 'auto';
+    let preferredModelId: string | undefined;
+    let modelChain: string[] | undefined;
+    let routingCategory: any;
+    let generationParams = { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 4096 };
+
+    if (isAutoMode) {
+      const autoRoute = resolveAutoRoute(intent.intent);
+      preferredModelId = autoRoute.preferredModelId || undefined;
+      modelChain = autoRoute.modelChain;
+      routingCategory = autoRoute.category;
+      generationParams = autoRoute.params;
+    } else {
+      preferredModelId = settings.model;
+      routingCategory = 'general';
+    }
 
     // ── Stream tokens ────────────────────────────────────────────────────────
     sseWrite(res, { type: 'status', text: 'Generating response…' });
@@ -152,18 +171,14 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
         systemPrompt,
         history: convertedHistory,
         preferredModelId,
+        modelChain,
         category: routingCategory,
-        params: { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 4096 },
+        params: generationParams,
       },
       (selectedModel) => { modelUsed = selectedModel; }
     );
 
     // Manually drain the generator so we capture the return value (metadata)
-    // Also send a heartbeat every 5s during generation to keep proxies happy
-    const streamHeartbeat = setInterval(() => {
-      if (!res.writableEnded && fullText.length === 0) res.write(': heartbeat\n\n');
-    }, 5000);
-
     let streamResult = await tokenStream.next();
     while (!streamResult.done) {
       if (clientGone) break;
@@ -172,7 +187,6 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       sseWrite(res, { type: 'token', text: token });
       streamResult = await tokenStream.next();
     }
-    clearInterval(streamHeartbeat);
 
     // Capture final metadata from generator return value
     if (streamResult.done && streamResult.value) {
@@ -183,12 +197,19 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
 
     if (clientGone) { sseEnd(res); return; }
 
-    sseWrite(res, { type: 'done', modelUsed, autoRouted, responseTime: `${Date.now() - startTime}ms` });
+    sseWrite(res, {
+      type: 'done',
+      modelUsed,
+      autoRouted,
+      responseTime: `${Date.now() - startTime}ms`,
+      ...(agentContext.degradedLayers.length > 0 && { degradedLayers: agentContext.degradedLayers }),
+    });
     sseEnd(res);
 
     // ── Non-blocking post-processing ─────────────────────────────────────────
     if (fullText) {
-      persistSohamMemory({ userId, userMessage: message, assistantMessage: fullText }).catch(() => {});
+      persistSohamMemory({ userId, userMessage: message, assistantMessage: fullText })
+        .catch(err => logger.warn('[Stream] Memory persist failed', { error: err instanceof Error ? err.message : String(err) }));
       extractLongTermMemoriesAsync(userId, message, fullText);
       triggerAutoLearnAsync({ userMessage: message, assistantMessage: fullText, toolResults: agentContext.toolsUsed, modelUsed });
     }
@@ -198,5 +219,8 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     logger.error('[Stream] Fatal error', { error: errorMessage, userId });
     sseWrite(res, { type: 'error', text: 'Something went wrong. Please try again.' });
     sseEnd(res);
+  } finally {
+    clearTimeout(sseTimeout);
+    clearInterval(heartbeat);
   }
 }

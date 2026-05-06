@@ -2,43 +2,22 @@
  * SOHAM Orchestrator — Hyper-Adaptive Brain Layer
  * ══════════════════════════════════════════════════════════════════════════
  *
- * Memory architecture (6 layers):
+ * Memory architecture (7 layers):
  *
- *   LAYER 0 — REALTIME AWARENESS
- *     • Current date/time injected into every prompt
- *     • Live news/web search cached in Upstash as REAL_WORLD chunks
- *     • Stale chunks expire automatically (TTL per data type)
+ *   LAYER 0 — REALTIME AWARENESS   (date/time + live data)
+ *   LAYER 1 — TOOL RESULTS         (weather, news, sports, finance, web)
+ *   LAYER 2 — USER PROFILE         (Supabase user_profiles)
+ *   LAYER 3 — LONG-TERM MEMORY     (Supabase memories — cosine search)
+ *   LAYER 4 — SHORT-TERM HISTORY   (Supabase chat_history — cross-device)
+ *   LAYER 5 — SEMANTIC RAG         (Upstash Vector — private namespace)
+ *   LAYER 6 — PUBLIC KNOWLEDGE     (Upstash Vector — public namespace)
  *
- *   LAYER 1 — USER PROFILE (Supabase user_profiles)
- *     • Name, age, location, occupation, preferences
- *     • Likes/dislikes, custom facts
- *     • Auto-updated from every conversation
+ * Resilience: every layer is fetched independently via Promise.allSettled.
+ * A single failing layer (e.g. Supabase down) degrades gracefully — the
+ * remaining layers still contribute to the context.
  *
- *   LAYER 2 — LONG-TERM MEMORY (Supabase memories)
- *     • Extracted facts, preferences, skills per user
- *     • Cosine similarity search on every request
- *
- *   LAYER 3 — SHORT-TERM HISTORY (Supabase chat_history)
- *     • Last N messages across all devices
- *     • Cross-device continuity
- *
- *   LAYER 4 — SEMANTIC RAG (Upstash Vector — private namespace)
- *     • Semantic similarity search on past conversations
- *     • Recency + importance weighted scoring
- *
- *   LAYER 5 — PUBLIC KNOWLEDGE (Upstash Vector — public namespace)
- *     • Verified corrections, suggestions, FAQs
- *     • Auto-learned from every tool result and AI response
- *     • Shared across all users
- *
- *   LAYER 6 — REALWORLD CACHE (Upstash Vector — realworld namespace)
- *     • Live news, weather, web search results
- *     • TTL-based expiry (15min–24h depending on data type)
- *     • Reduces external API calls for repeated queries
- *
- * Self-organising loop:
- *   Every response → triggerAutoLearn() → stores tool results + Q→A pairs
- *   → future similar queries hit the vector store instead of external APIs
+ * Context size guard: assembled prompt is capped at MAX_CONTEXT_CHARS to
+ * prevent exceeding model context windows.
  */
 
 import type { MessageData } from '../adapters/types';
@@ -63,6 +42,15 @@ import {
 } from '../memory/realtime-knowledge-service';
 import { triggerAutoLearn } from '../memory/rag-auto-learn';
 import { analyzeQuery } from '../tools/search-engine';
+import { logger } from '../utils/logger';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/** Max chars for the assembled context block (~24k tokens at 4 chars/token) */
+const MAX_CONTEXT_CHARS = 96_000;
+
+/** Max chars per individual context block to prevent one layer dominating */
+const MAX_BLOCK_CHARS = 2_000;
 
 export interface SohamContextResult {
   prompt: string;
@@ -74,27 +62,25 @@ export interface SohamContextResult {
   publicKnowledgeCount: number;
   realtimeContextCount: number;
   currentDateTime: string;
+  /** Which layers failed (for observability) */
+  degradedLayers: string[];
 }
 
 // ─── Long-term memory retrieval ───────────────────────────────────────────────
 
 async function searchLongTermMemories(userId: string | undefined, query: string): Promise<string[]> {
   if (!userId) return [];
-  try {
-    const memoryService = getMemorySystemService();
-    const results = await memoryService.searchMemories({
-      userId,
-      queryText: query,
-      topK: 5,
-      minSimilarity: 0.45,
-    });
-    return results.map(r => {
-      const cat = r.memory.metadata.category.toLowerCase();
-      return `[${cat}] ${r.memory.content}`;
-    });
-  } catch {
-    return [];
-  }
+  const memoryService = getMemorySystemService();
+  const results = await memoryService.searchMemories({
+    userId,
+    queryText: query,
+    topK: 5,
+    minSimilarity: 0.45,
+  });
+  return results.map(r => {
+    const cat = r.memory.metadata.category.toLowerCase();
+    return `[${cat}] ${r.memory.content}`;
+  });
 }
 
 // ─── Long-term memory extraction (non-blocking) ───────────────────────────────
@@ -108,13 +94,34 @@ export function extractLongTermMemoriesAsync(
   const service = getMemoryExtractionService();
   service
     .extractAndStore({ userMessage, assistantResponse: assistantMessage, userId })
-    .catch(err => console.warn('[Orchestrator] Long-term memory extraction failed:', err));
+    .catch(err => logger.warn('[Orchestrator] Long-term memory extraction failed', {
+      error: err instanceof Error ? err.message : String(err),
+      userId,
+    }));
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Unwrap a settled result, returning the fallback on rejection */
+function settled<T>(result: PromiseSettledResult<T>, fallback: T, layerName: string, degraded: string[]): T {
+  if (result.status === 'fulfilled') return result.value;
+  const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+  logger.warn(`[Orchestrator] Layer "${layerName}" failed`, { error: reason });
+  degraded.push(layerName);
+  return fallback;
+}
+
+/** Truncate a string to maxChars, appending '…' if cut */
+function cap(s: string, maxChars: number): string {
+  return s.length <= maxChars ? s : s.slice(0, maxChars - 1) + '…';
 }
 
 // ─── Main context builder ─────────────────────────────────────────────────────
 
 /**
- * Build an enriched prompt combining all 6 memory layers + realtime context.
+ * Build an enriched prompt combining all 7 memory layers + realtime context.
+ *
+ * Uses Promise.allSettled so a single failing layer never blocks the response.
  */
 export async function buildSohamPromptContext(input: {
   message: string;
@@ -122,6 +129,7 @@ export async function buildSohamPromptContext(input: {
   userId?: string;
 }): Promise<SohamContextResult> {
   const { message, userId } = input;
+  const degradedLayers: string[] = [];
 
   const profileService   = getUserProfileService();
   const knowledgeService = getUpstashKnowledgeService();
@@ -135,39 +143,49 @@ export async function buildSohamPromptContext(input: {
     : queryAnalysis.isTimeSensitive          ? 'web'
     : 'general';
 
-  // ── Parallel fetch all layers ─────────────────────────────────────────────
+  const needsRealtime = queryAnalysis.isTimeSensitive
+    || queryAnalysis.queryType === 'news'
+    || queryAnalysis.queryType === 'realtime';
+
+  // ── Parallel fetch all layers — allSettled so one failure doesn't kill all ─
   const [
-    toolResult,
-    ragSnippets,
-    crossDeviceHistory,
-    longTermMemories,
-    userProfile,
-    publicKnowledge,
-    realtimeCtx,
-  ] = await Promise.all([
+    toolResult$,
+    ragSnippets$,
+    crossDeviceHistory$,
+    longTermMemories$,
+    userProfile$,
+    publicKnowledge$,
+    realtimeCtx$,
+  ] = await Promise.allSettled([
     executeSohamTool(message),
     queryRagContext(userId, message, 5),
     loadCrossDeviceHistory(userId, 6),
     searchLongTermMemories(userId, message),
     userId ? profileService.getProfile(userId) : Promise.resolve(null),
     knowledgeService.searchKnowledge(message, 4, 0.48),
-    // Only fetch realtime context for time-sensitive or news queries
-    (queryAnalysis.isTimeSensitive || queryAnalysis.queryType === 'news' || queryAnalysis.queryType === 'realtime')
+    needsRealtime
       ? getRealtimeContext(message, realtimeQueryType as any)
       : Promise.resolve({ datetime: getCurrentDateTimeContext(), liveData: undefined }),
   ]);
 
-  // Also query realworld cache for any query type (fast, no external call)
+  // Realworld cache — fast Upstash read, no external API
   const realtimeChunks = await queryRealtimeChunks(message, 3).catch(() => [] as string[]);
+
+  // Unwrap results with graceful degradation
+  const toolResult        = settled(toolResult$,        null,  'tool',         degradedLayers);
+  const ragSnippets       = settled(ragSnippets$,       [],    'rag',          degradedLayers);
+  const crossDeviceHistory = settled(crossDeviceHistory$, [], 'cross-device', degradedLayers);
+  const longTermMemories  = settled(longTermMemories$,  [],    'long-term',    degradedLayers);
+  const userProfile       = settled(userProfile$,       null,  'profile',      degradedLayers);
+  const publicKnowledge   = settled(publicKnowledge$,   [],    'knowledge',    degradedLayers);
+  const realtimeCtx       = settled(realtimeCtx$,
+    { datetime: getCurrentDateTimeContext(), liveData: undefined },
+    'realtime', degradedLayers);
 
   const toolsUsed = toolResult ? [toolResult] : [];
   const contextBlocks: string[] = [];
 
-  // ── LAYER 0: Realtime awareness — always inject date/time ─────────────────
-  const dtLine = buildDateTimePromptLine(realtimeCtx.datetime);
-  // This goes into the system prompt prefix, not a context block
-
-  // ── LAYER 0b: Live data from realtime service ─────────────────────────────
+  // ── LAYER 0b: Live data ───────────────────────────────────────────────────
   const liveDataItems = realtimeCtx.liveData ?? [];
   const allRealtimeContent = [
     ...realtimeChunks,
@@ -179,7 +197,7 @@ export async function buildSohamPromptContext(input: {
   if (allRealtimeContent.length > 0) {
     contextBlocks.push(
       `Live data:\n` +
-      allRealtimeContent.map((c, i) => `${i + 1}. ${c.slice(0, 400)}`).join('\n\n')
+      allRealtimeContent.map((c, i) => `${i + 1}. ${cap(c, 400)}`).join('\n\n')
     );
   }
 
@@ -187,23 +205,23 @@ export async function buildSohamPromptContext(input: {
   if (toolResult) {
     contextBlocks.push(
       `${toolResult.ok ? 'Current data' : 'Data lookup'}:\n` +
-      `${toolResult.output}`
+      cap(toolResult.output, MAX_BLOCK_CHARS)
     );
   }
 
-  // ── LAYER 2: User profile — injected as silent background knowledge ───────
+  // ── LAYER 2: User profile ─────────────────────────────────────────────────
   if (userProfile) {
     const profileContext = profileService.buildProfileContext(userProfile);
     if (profileContext.trim().length > 0) {
-      contextBlocks.push(`About this user:\n${profileContext}`);
+      contextBlocks.push(`About this user:\n${cap(profileContext, MAX_BLOCK_CHARS)}`);
     }
   }
 
-  // ── LAYER 3: Long-term memory — injected as silent background knowledge ───
+  // ── LAYER 3: Long-term memory ─────────────────────────────────────────────
   if (longTermMemories.length > 0) {
     contextBlocks.push(
       `What you know about this user:\n` +
-      longTermMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')
+      longTermMemories.map((m, i) => `${i + 1}. ${cap(m, 300)}`).join('\n')
     );
   }
 
@@ -211,42 +229,57 @@ export async function buildSohamPromptContext(input: {
   if (crossDeviceHistory.length > 0) {
     const historyText = crossDeviceHistory
       .slice(-4)
-      .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+      .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${cap(m.content as string, 500)}`)
       .join('\n');
     contextBlocks.push(`Recent conversation:\n${historyText}`);
   }
 
-  // ── LAYER 5: Semantic RAG snippets ────────────────────────────────────────
+  // ── LAYER 5: Semantic RAG ─────────────────────────────────────────────────
   if (ragSnippets.length > 0) {
     contextBlocks.push(
       `Relevant context:\n` +
-      ragSnippets.map((x, i) => `${i + 1}. ${x}`).join('\n')
+      ragSnippets.map((x, i) => `${i + 1}. ${cap(x, 300)}`).join('\n')
     );
   }
 
   // ── LAYER 6: Public knowledge ─────────────────────────────────────────────
   if (publicKnowledge.length > 0) {
     const knowledgeText = knowledgeService.formatForPrompt(publicKnowledge);
-    contextBlocks.push(`Verified knowledge:\n${knowledgeText}`);
+    contextBlocks.push(`Verified knowledge:\n${cap(knowledgeText, MAX_BLOCK_CHARS)}`);
   }
 
-  // ── Assemble final prompt ─────────────────────────────────────────────────
-  // Context is framed as background knowledge the model already has —
-  // NOT as external sources it should reference or cite.
+  // ── Assemble prompt with context size guard ───────────────────────────────
+  const dtLine = buildDateTimePromptLine(realtimeCtx.datetime);
+
+  let contextSection = contextBlocks.join('\n\n');
+  if (contextSection.length > MAX_CONTEXT_CHARS) {
+    logger.warn('[Orchestrator] Context truncated', {
+      original: contextSection.length,
+      limit: MAX_CONTEXT_CHARS,
+      userId,
+    });
+    contextSection = contextSection.slice(0, MAX_CONTEXT_CHARS) + '\n[context truncated]';
+  }
+
   const prompt = contextBlocks.length === 0
     ? message
-    : `${message}\n\n---\n${dtLine}\n\nBackground context (use naturally to inform your response — do NOT mention, cite, or reference any of these sources):\n\n${contextBlocks.join('\n\n')}`;
+    : `${message}\n\n---\n${dtLine}\n\nBackground context (use naturally — do NOT cite or reference these sources):\n\n${contextSection}`;
+
+  if (degradedLayers.length > 0) {
+    logger.info('[Orchestrator] Degraded layers', { layers: degradedLayers, userId });
+  }
 
   return {
     prompt,
     toolsUsed,
-    ragContextCount:        ragSnippets.length,
+    ragContextCount:         ragSnippets.length,
     crossDeviceHistoryCount: crossDeviceHistory.length,
-    longTermMemoryCount:    longTermMemories.length,
-    userProfileLoaded:      userProfile !== null,
-    publicKnowledgeCount:   publicKnowledge.length,
-    realtimeContextCount:   allRealtimeContent.length,
-    currentDateTime:        realtimeCtx.datetime.utc,
+    longTermMemoryCount:     longTermMemories.length,
+    userProfileLoaded:       userProfile !== null,
+    publicKnowledgeCount:    publicKnowledge.length,
+    realtimeContextCount:    allRealtimeContent.length,
+    currentDateTime:         realtimeCtx.datetime.utc,
+    degradedLayers,
   };
 }
 
@@ -261,7 +294,7 @@ export async function persistSohamMemory(input: {
   const { userId, userMessage, assistantMessage, metadata } = input;
   if (!userId) return;
 
-  await Promise.all([
+  await Promise.allSettled([
     persistCrossDeviceHistory(userId, userMessage, assistantMessage, metadata),
     upsertRagMemory(userId, 'user', userMessage),
     upsertRagMemory(userId, 'assistant', assistantMessage),
@@ -270,10 +303,6 @@ export async function persistSohamMemory(input: {
 
 // ─── Auto-learn trigger (non-blocking) ───────────────────────────────────────
 
-/**
- * Trigger the self-organising auto-learn loop after every response.
- * Stores tool results, Q→A pairs, corrections, and suggestions.
- */
 export function triggerAutoLearnAsync(input: {
   userMessage: string;
   assistantMessage: string;

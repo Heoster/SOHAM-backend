@@ -279,6 +279,36 @@
       "enabled": true
     },
     {
+      "id": "groq-llama-3.3-70b",
+      "name": "Llama 3.3 70B Versatile (Groq)",
+      "provider": "groq",
+      "modelId": "llama-3.3-70b-versatile",
+      "category": "general",
+      "description": "Meta Llama 3.3 70B — Groq's flagship chat model, fast and highly capable",
+      "contextWindow": 131072,
+      "supportsStreaming": true,
+      "maxOutputTokens": 8192,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 14400
+      },
+      "priority": 92,
+      "defaultParams": {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
       "id": "cerebras-llama-4-scout-17b",
       "name": "Cerebras Llama 3.1 8B",
       "provider": "cerebras",

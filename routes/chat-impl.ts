@@ -16,6 +16,7 @@ import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsy
 import { getIntentDetector } from '../core/intent-detector';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
+import { resolveAutoRoute } from '../routing/auto-router';
 
 export async function chatHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
@@ -78,14 +79,24 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });
 
     // ── Routing ─────────────────────────────────────────────────────────────
-    const preferredModelId = settings.model && settings.model !== 'auto' ? settings.model : undefined;
-    const intentCategoryMap: Record<string, string> = {
-      CODE_GENERATION: 'coding', EXPLANATION: 'general', TRANSLATION: 'general',
-      SENTIMENT_ANALYSIS: 'general', GRAMMAR_CHECK: 'general', QUIZ_GENERATION: 'general',
-      RECIPE: 'general', JOKE: 'general', DICTIONARY: 'general',
-      FACT_CHECK: 'general', WEB_SEARCH: 'general', CHAT: 'general',
-    };
-    const routingCategory = (intentCategoryMap[intent.intent] ?? 'general') as any;
+    // In Auto mode: resolve the best model per intent.
+    // In manual mode: honour the user's explicit model choice.
+    const isAutoMode = !settings.model || settings.model === 'auto';
+    let preferredModelId: string | undefined;
+    let modelChain: string[] | undefined;
+    let routingCategory: any;
+    let generationParams = { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 4096 };
+
+    if (isAutoMode) {
+      const autoRoute = resolveAutoRoute(intent.intent);
+      preferredModelId = autoRoute.preferredModelId || undefined;
+      modelChain = autoRoute.modelChain;
+      routingCategory = autoRoute.category;
+      generationParams = autoRoute.params;
+    } else {
+      preferredModelId = settings.model;
+      routingCategory = 'general';
+    }
 
     // ── Generate ────────────────────────────────────────────────────────────
     const result = await generateWithSmartFallback({
@@ -93,8 +104,9 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       systemPrompt,
       history: convertedHistory,
       preferredModelId,
+      modelChain,
       category: routingCategory,
-      params: { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 4096 },
+      params: generationParams,
     });
 
     // ── Non-blocking post-processing ────────────────────────────────────────

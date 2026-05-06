@@ -1,13 +1,59 @@
 /**
  * Smart Fallback Engine
- * Automatically falls back between Groq models when one fails
- * Only includes tested and working models
+ * Automatically falls back between models when one fails.
+ * Includes circuit breaker to skip repeatedly-failing models.
  */
 
 import { getModelRegistry } from './model-registry';
 import type { ModelConfig, ModelCategory } from './model-config';
 import { getAdapter } from '../adapters';
 import type { GenerateRequest, GenerateResponse } from '../adapters/types';
+
+// ── Circuit breaker ───────────────────────────────────────────────────────────
+// Tracks consecutive failures per model. After CIRCUIT_THRESHOLD failures
+// within CIRCUIT_WINDOW_MS, the model is skipped for CIRCUIT_COOLDOWN_MS.
+
+const CIRCUIT_THRESHOLD  = 3;
+const CIRCUIT_WINDOW_MS  = 5 * 60_000;   // 5 minutes
+const CIRCUIT_COOLDOWN_MS = 2 * 60_000;  // 2 minutes cooldown
+
+interface CircuitState {
+  failures: number[];   // timestamps of recent failures
+  openUntil: number;    // epoch ms — model is skipped until this time
+}
+
+const circuitBreakers = new Map<string, CircuitState>();
+
+function isCircuitOpen(modelId: string): boolean {
+  const state = circuitBreakers.get(modelId);
+  if (!state) return false;
+  if (Date.now() < state.openUntil) return true;
+  // Cooldown expired — reset
+  state.openUntil = 0;
+  state.failures = [];
+  return false;
+}
+
+function recordFailure(modelId: string): void {
+  const now = Date.now();
+  let state = circuitBreakers.get(modelId);
+  if (!state) {
+    state = { failures: [], openUntil: 0 };
+    circuitBreakers.set(modelId, state);
+  }
+  // Slide the window
+  state.failures = state.failures.filter(t => now - t < CIRCUIT_WINDOW_MS);
+  state.failures.push(now);
+  if (state.failures.length >= CIRCUIT_THRESHOLD) {
+    state.openUntil = now + CIRCUIT_COOLDOWN_MS;
+    console.warn(`[Circuit] ${modelId} tripped — skipping for ${CIRCUIT_COOLDOWN_MS / 1000}s`);
+  }
+}
+
+function recordSuccess(modelId: string): void {
+  const state = circuitBreakers.get(modelId);
+  if (state) { state.failures = []; state.openUntil = 0; }
+}
 
 interface FallbackAttempt {
   modelId: string;
@@ -203,6 +249,7 @@ async function tryGenerateWithModel(
 export async function generateWithSmartFallback(
   request: Omit<GenerateRequest, 'model'> & { 
     preferredModelId?: string;
+    modelChain?: string[];       // ordered list from auto-router — tried before category pool
     category?: ModelCategory;
   }
 ): Promise<FallbackResult> {
@@ -210,101 +257,79 @@ export async function generateWithSmartFallback(
   const attempts: FallbackAttempt[] = [];
   let fallbackTriggered = false;
   const startTime = Date.now();
-  const MAX_TOTAL_TIME = 55000; // 55s total — allows 3-4 models at 15s each
-  
-  // Determine which models to try
-  let modelsToTry: ModelConfig[] = [];
-  
-  if (request.preferredModelId) {
-    const preferredModel = registry.getModel(request.preferredModelId);
-    if (preferredModel) {
-      const isAvailable = registry.isModelAvailable(request.preferredModelId);
-      console.log(`[Smart Fallback] Preferred model ${request.preferredModelId}: found=${!!preferredModel}, available=${isAvailable}`);
-      
-      if (isAvailable) {
-        modelsToTry.push(preferredModel);
-      } else {
-        console.warn(`[Smart Fallback] Preferred model ${request.preferredModelId} is not available. Provider ${preferredModel.provider} may not be configured.`);
-      }
-    } else {
-      console.warn(`[Smart Fallback] Preferred model ${request.preferredModelId} not found in registry`);
-    }
+  const MAX_TOTAL_TIME = 55000;
+
+  // ── Build ordered model list ──────────────────────────────────────────────
+  // Priority: modelChain (auto-router order) → preferredModelId → category pool → all models
+  const seen = new Set<string>();
+  const modelsToTry: ModelConfig[] = [];
+
+  const addModel = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const m = registry.getModel(id);
+    if (m && registry.isModelAvailable(id)) modelsToTry.push(m);
+  };
+
+  // 1. Walk the custom chain first (respects auto-router intent order)
+  if (request.modelChain?.length) {
+    request.modelChain.forEach(addModel);
   }
-  
-  // Add fallback models from the same category
+
+  // 2. Preferred model (manual selection or single override)
+  if (request.preferredModelId) addModel(request.preferredModelId);
+
+  // 3. Category pool as safety net
   if (request.category) {
-    const categoryModels = getFallbackModels(request.category);
-    modelsToTry.push(...categoryModels.filter(m => 
-      !modelsToTry.some(existing => existing.id === m.id)
-    ));
+    getFallbackModels(request.category).forEach(m => addModel(m.id));
   }
-  
-  // If still no models in preferred category, try all available models as ultimate fallback
+
+  // 4. All available models as last resort
   if (modelsToTry.length === 0) {
-    console.warn('No models in preferred category, trying all available models as fallback');
-    modelsToTry = registry.getAvailableModels();
+    registry.getAvailableModels().forEach(m => addModel(m.id));
   }
-  
+
   if (modelsToTry.length === 0) {
-    throw new Error('No models available. Please check your GROQ_API_KEY configuration at https://console.groq.com/keys');
+    throw new Error('No models available. Please check your API key configuration.');
   }
-  
-  // Try up to 6 models in sequence: primary + 5 fallbacks (covers all fast providers)
-  const maxModelsToTry = Math.min(modelsToTry.length, 6);
-  
-  // Try each model in sequence
+
+  const maxModelsToTry = Math.min(modelsToTry.length, 8);
+
   for (let i = 0; i < maxModelsToTry; i++) {
     const model = modelsToTry[i];
-    
-    // Check if we're approaching timeout
-    const elapsed = Date.now() - startTime;
-    if (elapsed > MAX_TOTAL_TIME) {
+
+    if (Date.now() - startTime > MAX_TOTAL_TIME) {
       throw new Error('Request timeout - exceeded maximum processing time');
     }
-    
+
+    // Skip models whose circuit breaker is open
+    if (isCircuitOpen(model.id)) {
+      console.log(`[Fallback] Skipping ${model.id} — circuit open`);
+      continue;
+    }
+
     try {
       console.log(`Attempting generation with ${model.name} (${model.id})...`);
-      
       const response = await tryGenerateWithModel(model, request);
-      
-      // Success!
-      return {
-        response,
-        modelUsed: model.id,
-        attempts,
-        fallbackTriggered: i > 0, // Fallback was triggered if we're not on the first model
-      };
+      recordSuccess(model.id);
+      return { response, modelUsed: model.id, attempts, fallbackTriggered: i > 0 };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      attempts.push({
-        modelId: model.id,
-        error: errorMessage,
-        timestamp: Date.now(),
-      });
-      
+      attempts.push({ modelId: model.id, error: errorMessage, timestamp: Date.now() });
       console.error(`Failed to generate with ${model.name}:`, errorMessage);
-      
-      // If this was a critical failure and we have more models, trigger fallback
+      recordFailure(model.id);
+
       if (isCriticalFailure(error) && i < maxModelsToTry - 1) {
         fallbackTriggered = true;
-        console.log(`Critical failure detected, falling back to next model...`);
         continue;
       }
-      
-      // If this is the last model, throw the error
       if (i === maxModelsToTry - 1) {
-        throw new Error(
-          `All models failed. Last error: ${errorMessage}. ` +
-          `Attempted models: ${attempts.map(a => a.modelId).join(', ')}`
-        );
+        throw new Error(`All models failed. Last error: ${errorMessage}. Attempted: ${attempts.map(a => a.modelId).join(', ')}`);
       }
-      
-      // Otherwise, try the next model
       fallbackTriggered = true;
     }
   }
-  
+
   throw new Error('Failed to generate response with any available model');
 }
 
@@ -316,6 +341,7 @@ export async function generateWithSmartFallback(
 export async function* streamWithSmartFallback(
   request: Omit<GenerateRequest, 'model'> & {
     preferredModelId?: string;
+    modelChain?: string[];       // ordered list from auto-router
     category?: ModelCategory;
   },
   onModelSelected?: (modelId: string) => void
@@ -324,30 +350,27 @@ export async function* streamWithSmartFallback(
   const startTime = Date.now();
   const MAX_TOTAL_TIME = 55000;
 
-  // Build model list (same logic as generateWithSmartFallback)
-  let modelsToTry: ModelConfig[] = [];
+  // ── Build ordered model list (same logic as generateWithSmartFallback) ────
+  const seen = new Set<string>();
+  const modelsToTry: ModelConfig[] = [];
 
-  if (request.preferredModelId) {
-    const preferred = registry.getModel(request.preferredModelId);
-    if (preferred && registry.isModelAvailable(request.preferredModelId)) {
-      modelsToTry.push(preferred);
-    }
-  }
+  const addModel = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const m = registry.getModel(id);
+    if (m && registry.isModelAvailable(id)) modelsToTry.push(m);
+  };
 
-  if (request.category) {
-    const categoryModels = getFallbackModels(request.category);
-    modelsToTry.push(...categoryModels.filter(m => !modelsToTry.some(e => e.id === m.id)));
-  }
-
-  if (modelsToTry.length === 0) {
-    modelsToTry = registry.getAvailableModels();
-  }
+  if (request.modelChain?.length) request.modelChain.forEach(addModel);
+  if (request.preferredModelId) addModel(request.preferredModelId);
+  if (request.category) getFallbackModels(request.category).forEach(m => addModel(m.id));
+  if (modelsToTry.length === 0) registry.getAvailableModels().forEach(m => addModel(m.id));
 
   if (modelsToTry.length === 0) {
     throw new Error('No models available. Please check your API key configuration.');
   }
 
-  const maxModelsToTry = Math.min(modelsToTry.length, 6);
+  const maxModelsToTry = Math.min(modelsToTry.length, 8);
 
   for (let i = 0; i < maxModelsToTry; i++) {
     const model = modelsToTry[i];
@@ -360,6 +383,12 @@ export async function* streamWithSmartFallback(
       continue;
     }
 
+    // Skip models whose circuit breaker is open
+    if (isCircuitOpen(model.id)) {
+      console.log(`[Stream] Skipping ${model.id} — circuit open`);
+      continue;
+    }
+
     const adapter = getAdapter(model.provider);
 
     try {
@@ -367,8 +396,6 @@ export async function* streamWithSmartFallback(
       onModelSelected?.(model.id);
 
       if (adapter.generateStream) {
-        // Manual iteration instead of yield* so mid-stream errors are caught
-        // and we can fall back to the next model
         const subGen = adapter.generateStream({ ...request, model });
         let next = await subGen.next();
         while (!next.done) {
@@ -376,20 +403,17 @@ export async function* streamWithSmartFallback(
           next = await subGen.next();
         }
       } else {
-        // Adapter doesn't support streaming — generate() and yield full text at once
         const response = await adapter.generate({ ...request, model });
         yield response.text;
       }
 
+      recordSuccess(model.id);
       return { modelUsed: model.id, fallbackTriggered: i > 0 };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`[Stream] Failed with ${model.name}:`, errorMessage);
-
-      if (i < maxModelsToTry - 1) {
-        continue; // try next model
-      }
-
+      recordFailure(model.id);
+      if (i < maxModelsToTry - 1) continue;
       throw new Error(`All models failed. Last error: ${errorMessage}`);
     }
   }
