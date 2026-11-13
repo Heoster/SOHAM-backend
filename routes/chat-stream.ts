@@ -12,7 +12,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { streamWithSmartFallback } from '../routing/smart-fallback';
+import { streamWithSmartFallback, getFriendlyErrorMessage } from '../routing/smart-fallback';
 import {
   buildSohamPromptContext,
   persistSohamMemory,
@@ -24,6 +24,7 @@ import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
 import { logger } from '../utils/logger';
+import { parseGroqToolOptions } from '../routing/groq-tool-options';
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 
@@ -52,6 +53,12 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
   }
   if (message.length > 10000) {
     res.status(400).json({ error: 'MESSAGE_TOO_LONG', message: 'Message exceeds 10,000 characters' });
+    return;
+  }
+  let groqToolOptions;
+  try { groqToolOptions = parseGroqToolOptions(settings); }
+  catch (error) {
+    res.status(400).json({ error: 'INVALID_GROQ_TOOL_OPTIONS', message: error instanceof Error ? error.message : 'Invalid Groq tool options' });
     return;
   }
 
@@ -174,6 +181,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
         modelChain,
         category: routingCategory,
         params: generationParams,
+        ...groqToolOptions,
       },
       (selectedModel) => { modelUsed = selectedModel; }
     );
@@ -190,9 +198,12 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
 
     // Capture final metadata from generator return value
     if (streamResult.done && streamResult.value) {
-      const meta = streamResult.value as { modelUsed: string; fallbackTriggered: boolean };
+      const meta = streamResult.value as { modelUsed: string; fallbackTriggered: boolean; toolsUsed?: string[] };
       modelUsed = meta.modelUsed ?? modelUsed;
       autoRouted = meta.fallbackTriggered ?? false;
+      if (meta.toolsUsed?.length) {
+        sseWrite(res, { type: 'tools', toolsUsed: meta.toolsUsed });
+      }
     }
 
     if (clientGone) { sseEnd(res); return; }
@@ -216,8 +227,11 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logger.error('[Stream] Fatal error', { error: errorMessage, userId });
-    sseWrite(res, { type: 'error', text: 'Something went wrong. Please try again.' });
+    const diagnostic = error && typeof error === 'object' && 'diagnostic' in error
+      ? String((error as { diagnostic: unknown }).diagnostic)
+      : errorMessage;
+    logger.error('[Stream] Fatal error', { error: diagnostic, userId });
+    sseWrite(res, { type: 'error', text: getFriendlyErrorMessage(error) });
     sseEnd(res);
   } finally {
     clearTimeout(sseTimeout);

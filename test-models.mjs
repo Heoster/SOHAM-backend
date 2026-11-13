@@ -1,18 +1,17 @@
 /**
  * Model API Test Script — SOHAM Full Suite
- * Run: node server/test-models.mjs
+ * Run: node test-models.mjs
  */
 
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const dotenv = require('dotenv');
 const path = require('path');
-dotenv.config({ path: path.resolve('server', '.env') });
+dotenv.config({ path: path.resolve('.env') });
 
 const GROQ_KEY     = process.env.GROQ_API_KEY;
-const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY;
+const GROQ_FREE_PLAN_ONLY = process.env.GROQ_FREE_PLAN_ONLY === 'true';
 const GOOGLE_KEY   = process.env.GOOGLE_API_KEY;
-const HF_KEY       = process.env.HUGGINGFACE_API_KEY;
 const OR_KEY       = process.env.OPENROUTER_API_KEY;
 
 const PROMPT = [{ role: 'user', content: 'Reply with just the word OK.' }];
@@ -31,7 +30,7 @@ async function testOpenAICompat(label, url, apiKey, modelId, extraHeaders = {}) 
       fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...extraHeaders },
-        body: JSON.stringify({ model: modelId, messages: PROMPT, max_tokens: 20 }),
+        body: JSON.stringify({ model: modelId, messages: PROMPT, ...(url.includes('api.groq.com') ? { max_completion_tokens: 20 } : { max_tokens: 20 }) }),
       }),
       withTimeout(TIMEOUT_MS),
     ]);
@@ -66,52 +65,30 @@ async function testGoogle(label, modelId) {
 }
 
 const OR = { 'HTTP-Referer': 'https://soham-ai.vercel.app', 'X-Title': 'SOHAM' };
-const GROQ  = 'https://api.groq.com/openai/v1/chat/completions';
-const CBRAS = 'https://api.cerebras.ai/v1/chat/completions';
-const HF    = 'https://router.huggingface.co/v1/chat/completions';
 const ORURL = 'https://openrouter.ai/api/v1/chat/completions';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 async function runAll() {
   console.log('\n========================================');
-  console.log('  SOHAM Model API Test Suite — Full');
+  console.log('  SOHAM Free Model API Test Suite');
   console.log('========================================\n');
 
   const tests = [
-    // ── GROQ ──────────────────────────────────────────────────────────────
-    () => testOpenAICompat('Groq: llama-3.1-8b-instant',              GROQ,  GROQ_KEY,     'llama-3.1-8b-instant'),
-    () => testOpenAICompat('Groq: llama-3.3-70b-versatile',           GROQ,  GROQ_KEY,     'llama-3.3-70b-versatile'),
-    () => testOpenAICompat('Groq: llama-4-scout-17b-16e-instruct',    GROQ,  GROQ_KEY,     'meta-llama/llama-4-scout-17b-16e-instruct'),
-    () => testOpenAICompat('Groq: qwen/qwen3-32b',                    GROQ,  GROQ_KEY,     'qwen/qwen3-32b'),
-    () => testOpenAICompat('Groq: openai/gpt-oss-120b',               GROQ,  GROQ_KEY,     'openai/gpt-oss-120b'),
-    () => testOpenAICompat('Groq: openai/gpt-oss-20b',                GROQ,  GROQ_KEY,     'openai/gpt-oss-20b'),
-
-    // ── CEREBRAS ──────────────────────────────────────────────────────────
-    () => testOpenAICompat('Cerebras: llama3.1-8b',                   CBRAS, CEREBRAS_KEY, 'llama3.1-8b'),
-    () => testOpenAICompat('Cerebras: gpt-oss-120b',                  CBRAS, CEREBRAS_KEY, 'gpt-oss-120b'),
-    () => testOpenAICompat('Cerebras: zai-glm-4.7',                   CBRAS, CEREBRAS_KEY, 'zai-glm-4.7'),
-    () => testOpenAICompat('Cerebras: qwen-3-235b-a22b-instruct-2507',CBRAS, CEREBRAS_KEY, 'qwen-3-235b-a22b-instruct-2507'),
-
-    // ── GOOGLE ────────────────────────────────────────────────────────────
-    () => testGoogle('Google: gemini-2.5-flash',      'gemini-2.5-flash'),
-    () => testGoogle('Google: gemini-2.5-flash-lite', 'gemini-2.5-flash-lite'),
-
-    // ── HUGGINGFACE (free) ────────────────────────────────────────────────
-    () => testOpenAICompat('HuggingFace: Llama-3.1-8B-Instruct',          HF, HF_KEY, 'meta-llama/Llama-3.1-8B-Instruct'),
-    () => testOpenAICompat('HuggingFace: Llama-3.3-70B-Instruct',         HF, HF_KEY, 'meta-llama/Llama-3.3-70B-Instruct'),
-    () => testOpenAICompat('HuggingFace: Qwen2.5-72B-Instruct',           HF, HF_KEY, 'Qwen/Qwen2.5-72B-Instruct'),
-    () => testOpenAICompat('HuggingFace: Qwen2.5-7B-Instruct',            HF, HF_KEY, 'Qwen/Qwen2.5-7B-Instruct'),
-    () => testOpenAICompat('HuggingFace: DeepSeek-R1-Distill-Llama-70B',  HF, HF_KEY, 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B'),
-
-    // ── OPENROUTER (free tier) ────────────────────────────────────────────
-    () => testOpenAICompat('OpenRouter: openai/gpt-oss-20b:free',                ORURL, OR_KEY, 'openai/gpt-oss-20b:free',                OR),
-    () => testOpenAICompat('OpenRouter: openai/gpt-oss-120b:free',               ORURL, OR_KEY, 'openai/gpt-oss-120b:free',               OR),
-    () => testOpenAICompat('OpenRouter: nvidia/nemotron-3-super-120b-a12b:free', ORURL, OR_KEY, 'nvidia/nemotron-3-super-120b-a12b:free', OR),
-    () => testOpenAICompat('OpenRouter: google/gemma-4-31b-it:free',             ORURL, OR_KEY, 'google/gemma-4-31b-it:free',             OR),
-    () => testOpenAICompat('OpenRouter: google/gemma-3-27b-it:free',             ORURL, OR_KEY, 'google/gemma-3-27b-it:free',             OR),
-    () => testOpenAICompat('OpenRouter: google/gemma-3-12b-it:free',             ORURL, OR_KEY, 'google/gemma-3-12b-it:free',             OR),
-    () => testOpenAICompat('OpenRouter: arcee-ai/trinity-large-preview:free',    ORURL, OR_KEY, 'arcee-ai/trinity-large-preview:free',    OR),
-    () => testOpenAICompat('OpenRouter: minimax/minimax-m2.5:free',              ORURL, OR_KEY, 'minimax/minimax-m2.5:free',              OR),
-    () => testOpenAICompat('OpenRouter: openrouter/elephant-alpha',              ORURL, OR_KEY, 'openrouter/elephant-alpha',              OR),
+    // Groq checks are skipped unless the operator explicitly confirms a $0 Free-plan account.
+    () => GROQ_FREE_PLAN_ONLY
+      ? testOpenAICompat('Groq: GPT-OSS 120B', GROQ_URL, GROQ_KEY, 'openai/gpt-oss-120b')
+      : Promise.resolve({ label: 'Groq: GPT-OSS 120B', status: 'SKIP', reason: 'GROQ_FREE_PLAN_ONLY is not true' }),
+    () => GROQ_FREE_PLAN_ONLY
+      ? testOpenAICompat('Groq: GPT-OSS 20B', GROQ_URL, GROQ_KEY, 'openai/gpt-oss-20b')
+      : Promise.resolve({ label: 'Groq: GPT-OSS 20B', status: 'SKIP', reason: 'GROQ_FREE_PLAN_ONLY is not true' }),
+    () => GROQ_FREE_PLAN_ONLY
+      ? testOpenAICompat('Groq: Qwen 3.8 27B', GROQ_URL, GROQ_KEY, 'qwen/qwen3.8-27b')
+      : Promise.resolve({ label: 'Groq: Qwen 3.8 27B', status: 'SKIP', reason: 'GROQ_FREE_PLAN_ONLY is not true' }),
+    // These endpoints are documented as free-tier or explicitly free-router paths.
+    () => testGoogle('Google: Gemini 3.6 Flash', 'gemini-3.6-flash'),
+    () => testGoogle('Google: Gemini 3.5 Flash-Lite', 'gemini-3.5-flash-lite'),
+    () => testGoogle('Google: Gemini 3.1 Flash-Lite', 'gemini-3.1-flash-lite'),
+    () => testOpenAICompat('OpenRouter: free-only router', ORURL, OR_KEY, 'openrouter/free', OR),
   ];
 
   const results = [];

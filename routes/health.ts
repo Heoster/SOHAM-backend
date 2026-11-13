@@ -8,29 +8,31 @@
  *  2. providers       — Live probe of every AI provider API key
  *  3. search          — Tavily + Firecrawl + free fallbacks status
  *  4. memory          — Supabase + Upstash connectivity
- *  5. image           — Cloudflare + Pollinations + HuggingFace
+ *  5. image           — Cloudflare + Pollinations
  *  6. voice           — Groq TTS + STT
  *  7. endpoints       — Every registered route with method + path + status
  *  8. summary         — Counts: total / healthy / degraded / down
  * 10. checkedAt       — ISO timestamp of this health check run
  *
  * Two modes:
- *   GET /api/health          → fast (env-var checks only, ~5ms)
- *   GET /api/health?probe=1  → deep (live HTTP probes to each provider, ~3-8s)
+ *   GET /api/health          → fast config + model availability report
+ *   GET /api/health/live     → liveness probe
+ *   GET /api/health/ready    → model-provider readiness probe
+ *   GET /api/health?probe=1  → authenticated live probes (may consume provider quota)
  *
  * Status values:
  *   ok       — configured and (if probed) reachable
  *   degraded — not configured but not required
  *   down     — required and missing / unreachable
- *   skipped  — probe not requested
  */
 
 import type { Request, Response } from 'express';
 import * as os from 'os';
+import { getModelRegistry } from '../routing/model-registry';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type HealthStatus = 'ok' | 'degraded' | 'down' | 'skipped';
+type HealthStatus = 'ok' | 'degraded' | 'down';
 
 interface ProviderHealth {
   status: HealthStatus;
@@ -41,10 +43,11 @@ interface ProviderHealth {
   description: string;
   keyEnvVar: string;
   docsUrl?: string;
+  note?: string;
 }
 
 interface EndpointHealth {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'DELETE';
   path: string;
   category: string;
   status: 'registered' | 'unreachable';
@@ -64,6 +67,7 @@ interface HealthReport {
   memory: Record<string, ProviderHealth>;
   image: Record<string, ProviderHealth>;
   voice: Record<string, ProviderHealth>;
+  models: { total: number; available: number; groqFreePlanGate: boolean; entries: Array<{ id: string; provider: string; modelId: string; available: boolean }> };
   endpoints: EndpointHealth[];
 }
 
@@ -111,12 +115,13 @@ async function probe(
   timeoutMs = 5000
 ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
   const start = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       fn(),
-      new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs)
-      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
     ]);
     return { ok: true, latencyMs: Date.now() - start };
   } catch (err) {
@@ -125,6 +130,8 @@ async function probe(
       latencyMs: Date.now() - start,
       error: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
     };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -147,26 +154,6 @@ async function probeGoogle(): Promise<void> {
     `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`,
     { signal: AbortSignal.timeout(4000) }
   );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-}
-
-async function probeCerebras(): Promise<void> {
-  const key = process.env.CEREBRAS_API_KEY;
-  if (!key) throw new Error('CEREBRAS_API_KEY not set');
-  const res = await fetch('https://api.cerebras.ai/v1/models', {
-    headers: { Authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(4000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-}
-
-async function probeHuggingFace(): Promise<void> {
-  const key = process.env.HUGGINGFACE_API_KEY;
-  if (!key) throw new Error('HUGGINGFACE_API_KEY not set');
-  const res = await fetch('https://huggingface.co/api/whoami-v2', {
-    headers: { Authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(4000),
-  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
@@ -202,6 +189,65 @@ async function probeFirecrawl(): Promise<void> {
     body: JSON.stringify({ url: 'https://example.com', formats: ['markdown'], timeout: 3000 }),
     signal: AbortSignal.timeout(6000),
   });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+async function probeGNews(): Promise<void> {
+  const key = process.env.GNEWS_API_KEY;
+  if (!key) throw new Error('GNEWS_API_KEY not set');
+  const url = `https://gnews.io/api/v4/search?q=health%20check&lang=en&max=1&apikey=${encodeURIComponent(key)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { errors?: string[] };
+  if (data.errors?.length) throw new Error('GNews rejected the health query');
+}
+
+async function probeCricApi(): Promise<void> {
+  const key = process.env.CRICAPI_KEY;
+  if (!key) throw new Error('CRICAPI_KEY not set');
+  const url = `https://api.cricapi.com/v1/currentMatches?apikey=${encodeURIComponent(key)}&offset=0`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { status?: string; reason?: string };
+  if (data.status && data.status.toLowerCase() !== 'success') throw new Error(data.reason || 'CricAPI returned a non-success status');
+}
+
+async function probeAlphaVantage(): Promise<void> {
+  const key = process.env.ALPHA_VANTAGE_API_KEY;
+  if (!key) throw new Error('ALPHA_VANTAGE_API_KEY not set');
+  const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=IBM&apikey=${encodeURIComponent(key)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as Record<string, unknown>;
+  if (data['Error Message'] || data['Information'] || data['Note']) throw new Error('Alpha Vantage returned an API error or quota notice');
+}
+
+async function probeYouCom(): Promise<void> {
+  const key = process.env.YOU_API_KEY;
+  if (!key) throw new Error('YOU_API_KEY not set');
+  const res = await fetch('https://api.ydc-index.io/search?query=health%20check&num_web_results=1', {
+    headers: { 'X-API-Key': key }, signal: AbortSignal.timeout(4000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+async function probeDuckDuckGo(): Promise<void> {
+  const res = await fetch('https://api.duckduckgo.com/?q=health+check&format=json&no_html=1', { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+async function probeWikipedia(): Promise<void> {
+  const res = await fetch('https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=health%20check&srlimit=1&format=json', { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+async function probeOpenMeteo(): Promise<void> {
+  const res = await fetch('https://api.open-meteo.com/v1/forecast?latitude=28.9845&longitude=77.7064&current=temperature_2m', { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+async function probeCoinGecko(): Promise<void> {
+  const res = await fetch('https://api.coingecko.com/api/v3/ping', { signal: AbortSignal.timeout(4000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
@@ -283,10 +329,14 @@ async function liveCheck(
 
 const ALL_ENDPOINTS: EndpointHealth[] = [
   // System
-  { method: 'GET',  path: '/api/health',              category: 'system',   status: 'registered', description: 'Health check + full system info' },
+  { method: 'GET',  path: '/api/health',              category: 'system',   status: 'registered', description: 'Detailed health, provider, service, and model catalog report' },
+  { method: 'GET',  path: '/api/health/live',         category: 'system',   status: 'registered', description: 'Liveness probe for process supervisor' },
+  { method: 'GET',  path: '/api/health/ready',        category: 'system',   status: 'registered', description: 'Readiness probe requiring at least one configured active model' },
+  { method: 'GET',  path: '/api/health/services',     category: 'system',   status: 'registered', description: 'Detailed provider and domain-service checks' },
   // Chat
   { method: 'POST', path: '/api/chat',                category: 'chat',     status: 'registered', description: 'Main chat — full orchestration pipeline' },
   { method: 'POST', path: '/api/chat/personality',    category: 'chat',     status: 'registered', description: 'Chat with user personality + memory system' },
+  { method: 'POST', path: '/api/chat/stream',         category: 'chat',     status: 'registered', description: 'Server-sent event chat stream; tool turns stream final response after tool loop' },
   // AI Tools
   { method: 'POST', path: '/api/ai/search',           category: 'ai',       status: 'registered', description: '6-step web search: Tavily + Firecrawl + AI synthesis' },
   { method: 'POST', path: '/api/ai/solve',            category: 'ai',       status: 'registered', description: 'Math / problem solver with step-by-step solutions' },
@@ -304,46 +354,35 @@ const ALL_ENDPOINTS: EndpointHealth[] = [
   { method: 'POST', path: '/api/ai/dictionary',       category: 'skills',   status: 'registered', description: 'Word definitions, synonyms, etymology' },
   { method: 'POST', path: '/api/ai/fact-check',       category: 'skills',   status: 'registered', description: 'Fact-checking with web search + AI reasoning' },
   // Image
-  { method: 'POST', path: '/api/image/generate',      category: 'image',    status: 'registered', description: 'Image generation: Cloudflare → Pollinations → HuggingFace' },
+  { method: 'POST', path: '/api/image/generate',      category: 'image',    status: 'registered', description: 'Image generation: Pollinations, with Cloudflare behind explicit opt-in' },
   { method: 'POST', path: '/api/image/generate-cf',   category: 'image',    status: 'registered', description: 'Cloudflare Workers AI image generation only' },
   // Voice
-  { method: 'POST', path: '/api/voice/tts',           category: 'voice',    status: 'registered', description: 'Text-to-Speech via Groq Orpheus TTS' },
-  { method: 'POST', path: '/api/voice/transcribe',    category: 'voice',    status: 'registered', description: 'Speech-to-Text via Groq Whisper V3 Turbo' },
+  { method: 'POST', path: '/api/voice/tts',           category: 'voice',    status: 'registered', description: 'Browser text-to-speech fallback; provider TTS disabled' },
+  { method: 'POST', path: '/api/voice/transcribe',    category: 'voice',    status: 'registered', description: 'Browser speech recognition fallback; provider STT disabled' },
   // Memory
   { method: 'POST', path: '/api/memory/extract',      category: 'memory',   status: 'registered', description: 'Extract and store memories from conversation' },
+  { method: 'GET', path: '/api/memory/profile/:userId', category: 'memory', status: 'registered', description: 'Read user profile memory' },
+  { method: 'POST', path: '/api/memory/profile/:userId', category: 'memory', status: 'registered', description: 'Create or update user profile memory' },
+  { method: 'DELETE', path: '/api/memory/profile/:userId', category: 'memory', status: 'registered', description: 'Delete user profile memory' },
+  { method: 'POST', path: '/api/memory/knowledge', category: 'memory', status: 'registered', description: 'Store knowledge base facts' },
+  { method: 'POST', path: '/api/memory/knowledge/search', category: 'memory', status: 'registered', description: 'Search memory knowledge base' },
+  { method: 'POST', path: '/api/memory/knowledge/correction', category: 'memory', status: 'registered', description: 'Store memory corrections' },
+  { method: 'POST', path: '/api/memory/knowledge/suggestion', category: 'memory', status: 'registered', description: 'Submit memory suggestions' },
 ];
-
-// ─── Endpoint self-probe (OPTIONS / HEAD check against own server) ────────────
-
-async function probeEndpoints(baseUrl: string): Promise<EndpointHealth[]> {
-  return Promise.all(
-    ALL_ENDPOINTS.map(async ep => {
-      if (ep.method === 'GET') {
-        // Skip self-probing GET /api/health to avoid recursion
-        return ep;
-      }
-      try {
-        // Send OPTIONS to check if the route is reachable (no body needed)
-        const res = await fetch(`${baseUrl}${ep.path}`, {
-          method: 'OPTIONS',
-          signal: AbortSignal.timeout(2000),
-        });
-        // 200, 204, 400, 405 all mean the route exists
-        const reachable = res.status < 500;
-        return { ...ep, status: reachable ? 'registered' : 'unreachable' } as EndpointHealth;
-      } catch {
-        return { ...ep, status: 'unreachable' } as EndpointHealth;
-      }
-    })
-  );
-}
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
 export async function healthHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
   const probeMode = req.query['probe'] === '1' || req.query['probe'] === 'true';
-  const deepEndpoints = req.query['endpoints'] === '1';
+  if (probeMode) {
+    const expected = process.env.SOHAM_API_KEY;
+    if (!expected || req.get('authorization') !== `Bearer ${expected}`) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(401).json({ status: 'unauthorized', error: 'Deep provider probes require the backend API key.' });
+      return;
+    }
+  }
 
   // ── System info ─────────────────────────────────────────────────────────────
   const memTotal = os.totalmem();
@@ -370,38 +409,41 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
 
   // ── Build provider entries (env-var check first) ───────────────────────────
   let providers: Record<string, ProviderHealth> = {
-    groq: envCheck(
-      ['GROQ_API_KEY'], true,
-      'Primary AI provider — Llama 3.1/3.3, Mixtral, Gemma2',
-      'GROQ_API_KEY', 'https://console.groq.com/keys'
-    ),
+    groq: (() => {
+      const freePlanConfirmed = process.env.GROQ_FREE_PLAN_ONLY === 'true';
+      const configured = Boolean(process.env.GROQ_API_KEY) && freePlanConfirmed;
+      return {
+        status: configured ? 'ok' as const : 'degraded' as const,
+        configured,
+        required: false,
+        description: 'Groq GPT-OSS / Qwen chat and tools; gated to confirmed $0 Free-plan accounts',
+        keyEnvVar: 'GROQ_API_KEY + GROQ_FREE_PLAN_ONLY',
+        docsUrl: 'https://console.groq.com/docs/models',
+        note: freePlanConfirmed ? 'Free-plan-only opt-in is enabled.' : 'Disabled until GROQ_FREE_PLAN_ONLY=true is explicitly set.',
+      };
+    })(),
     google: envCheck(
       ['GOOGLE_API_KEY'], false,
-      'Google Gemini 2.5 Flash / Pro models',
+      'Google Gemini models with documented free-tier routes',
       'GOOGLE_API_KEY', 'https://aistudio.google.com/app/apikey'
-    ),
-    cerebras: envCheck(
-      ['CEREBRAS_API_KEY'], false,
-      'Cerebras ultra-fast inference (Llama 3.1/3.3)',
-      'CEREBRAS_API_KEY', 'https://cloud.cerebras.ai'
-    ),
-    huggingface: envCheck(
-      ['HUGGINGFACE_API_KEY'], false,
-      'HuggingFace Router — LLMs + FLUX image generation',
-      'HUGGINGFACE_API_KEY', 'https://huggingface.co/settings/tokens'
     ),
     openrouter: envCheck(
       ['OPENROUTER_API_KEY'], false,
-      'OpenRouter multi-model gateway (100+ models)',
+      'OpenRouter model gateway',
       'OPENROUTER_API_KEY', 'https://openrouter.ai/keys'
     ),
+    cloudflareAI: {
+      status: 'degraded', configured: false, required: false,
+      description: 'Cloudflare Workers AI text chat is disabled; image generation is separately gated.',
+      keyEnvVar: 'ENABLE_CLOUDFLARE_IMAGE_AI', docsUrl: 'https://dash.cloudflare.com',
+    },
   };
 
   let search: Record<string, ProviderHealth> = {
     you: envCheck(
       ['YOU_API_KEY'], false,
-      'You.com real-time web search — Tier-1 alongside Tavily',
-      'YOU_API_KEY', 'https://api.you.com'
+      'You.com real-time web search — optional search source',
+      'YOU_API_KEY', 'https://documentation.you.com/api-reference'
     ),
     tavily: envCheck(
       ['TAVILY_API_KEY'], false,
@@ -465,8 +507,8 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
 
   let image: Record<string, ProviderHealth> = {
     cloudflare: envCheck(
-      ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_AI_API_TOKEN'], false,
-      'Cloudflare Workers AI — FLUX image generation (primary)',
+      ['ENABLE_CLOUDFLARE_IMAGE_AI', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_AI_API_TOKEN'], false,
+      'Cloudflare Workers AI image generation (explicit opt-in; may be billable over free quota)',
       'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_AI_API_TOKEN', 'https://dash.cloudflare.com'
     ),
     pollinations: {
@@ -474,89 +516,48 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       description: 'Pollinations.ai FLUX — free, no key, always available',
       keyEnvVar: 'none',
     },
-    huggingfaceFlux: {
-      ...envCheck(
-        ['HUGGINGFACE_API_KEY'], false,
-        'HuggingFace FLUX.1-schnell — fallback image generation',
-        'HUGGINGFACE_API_KEY', 'https://huggingface.co/settings/tokens'
-      ),
-    },
   };
 
   let voice: Record<string, ProviderHealth> = {
-    groqTTS: {
-      ...envCheck(
-        ['GROQ_API_KEY'], true,
-        'Groq Orpheus TTS — voices: troy, diana, hannah, autumn, austin, daniel',
-        'GROQ_API_KEY', 'https://console.groq.com/keys'
-      ),
-    },
-    groqSTT: {
-      ...envCheck(
-        ['GROQ_API_KEY'], true,
-        'Groq Whisper V3 Turbo — speech-to-text transcription',
-        'GROQ_API_KEY', 'https://console.groq.com/keys'
-      ),
-    },
+    browserTTS: { status: 'ok', configured: true, required: false, description: 'Browser-provided text-to-speech; no provider API call', keyEnvVar: 'none' },
+    browserSTT: { status: 'ok', configured: true, required: false, description: 'Browser-provided speech recognition; no provider API call', keyEnvVar: 'none' },
   };
 
 
-  // ── Live probes (only when ?probe=1) ────────────────────────────────────────
+  // ── Live probes are explicit because keyed search APIs may consume quota. ──
   if (probeMode) {
-    [
-      providers.groq,
-      providers.google,
-      providers.cerebras,
-      providers.huggingface,
-      providers.openrouter,
-      search.tavily,
-      search.firecrawl,
-      memory.supabase,
-      memory.upstash,
-      image.cloudflare,
-    ] = await Promise.all([
-      liveCheck(providers.groq,        probeGroq),
-      liveCheck(providers.google,      probeGoogle),
-      liveCheck(providers.cerebras,    probeCerebras),
-      liveCheck(providers.huggingface, probeHuggingFace),
-      liveCheck(providers.openrouter,  probeOpenRouter),
-      liveCheck(search.tavily,         probeTavily),
-      liveCheck(search.firecrawl,      probeFirecrawl),
-      liveCheck(memory.supabase,       probeSupabase),
-      liveCheck(memory.upstash,        probeUpstash),
-      liveCheck(image.cloudflare,      probeCloudflare),
-    ]);
-
-    // Probe Pollinations (free, always)
-    const pollResult = await probe('pollinations', probePollinations, 4000);
-    image.pollinations = {
-      ...image.pollinations,
-      status: pollResult.ok ? 'ok' : 'degraded',
-      latencyMs: pollResult.latencyMs,
-      error: pollResult.error,
-    };
-  } else {
-    // Mark all as skipped in fast mode
-    const markSkipped = (rec: Record<string, ProviderHealth>) => {
-      for (const k of Object.keys(rec)) {
-        if (rec[k].configured) rec[k] = { ...rec[k], status: 'ok' };
-      }
-    };
-    markSkipped(providers);
-    markSkipped(search);
-    markSkipped(memory);
-    markSkipped(image);
-    markSkipped(voice);
+    const checks: Array<[Record<string, ProviderHealth>, string, () => Promise<void>]> = [
+      [providers, 'groq', probeGroq], [providers, 'google', probeGoogle],
+      [providers, 'openrouter', probeOpenRouter],
+      [search, 'you', probeYouCom], [search, 'tavily', probeTavily],
+      [search, 'firecrawl', probeFirecrawl], [search, 'gnews', probeGNews],
+      [search, 'cricapi', probeCricApi], [search, 'alphaVantage', probeAlphaVantage],
+      [search, 'duckduckgo', probeDuckDuckGo], [search, 'wikipedia', probeWikipedia],
+      [search, 'openMeteo', probeOpenMeteo], [search, 'coinGecko', probeCoinGecko],
+      [memory, 'supabase', probeSupabase], [memory, 'upstash', probeUpstash],
+      [image, 'cloudflare', probeCloudflare], [image, 'pollinations', probePollinations],
+    ];
+    await Promise.all(checks.map(async ([group, name, fn]) => {
+      const base = group[name];
+      if (!base) return;
+      group[name] = await liveCheck(base, fn);
+    }));
   }
 
-  // ── Endpoint verification ────────────────────────────────────────────────────
-  let endpoints: EndpointHealth[] = ALL_ENDPOINTS;
-  if (deepEndpoints) {
-    const proto = req.protocol;
-    const host  = req.get('host') ?? `localhost:${process.env.PORT ?? 8080}`;
-    const baseUrl = `${proto}://${host}`;
-    endpoints = await probeEndpoints(baseUrl);
-  }
+  // Models and availability reflect the same feature gates used by runtime routing.
+  const registry = getModelRegistry();
+  const catalog = registry.getAvailableModels();
+  const models = {
+    total: registry.getAllModels().length,
+    available: catalog.length,
+    groqFreePlanGate: process.env.GROQ_FREE_PLAN_ONLY === 'true',
+    entries: registry.getAllModels().map(model => ({
+      id: model.id, provider: model.provider, modelId: model.modelId,
+      available: registry.isModelAvailable(model.id),
+    })),
+  };
+
+  const endpoints: EndpointHealth[] = ALL_ENDPOINTS;
 
   // ── Summary ──────────────────────────────────────────────────────────────────
   const allProviders = [
@@ -574,7 +575,7 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
   const requiredDown = allProviders.filter(p => p.required && p.status === 'down').length;
   const overallStatus: HealthStatus =
     requiredDown > 0 ? 'down' :
-    countDown > 0    ? 'degraded' :
+    countDown > 0 || models.available === 0 ? 'degraded' :
     'ok';
 
   const summary: HealthSummary = {
@@ -600,6 +601,7 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
     memory,
     image,
     voice,
+    models,
     endpoints,
   };
 
@@ -609,4 +611,26 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
   res.setHeader('X-Health-Check-Ms', String(Date.now() - startTime));
   res.setHeader('Cache-Control', 'no-store');
   res.status(httpStatus).json(report);
+}
+
+
+/** Cheap process liveness probe: no API keys, network calls, or model inference. */
+export function healthLiveHandler(_req: Request, res: Response): void {
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).json({ status: 'alive', service: 'soham-backend', uptimeSeconds: Math.floor(process.uptime()), checkedAt: new Date().toISOString() });
+}
+
+/** Readiness requires at least one catalog model whose provider gates and credentials are active. */
+export function healthReadyHandler(_req: Request, res: Response): void {
+  const registry = getModelRegistry();
+  const models = registry.getAvailableModels();
+  const ready = models.length > 0;
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(ready ? 200 : 503).json({
+    status: ready ? 'ready' : 'not_ready',
+    service: 'soham-backend',
+    availableModelCount: models.length,
+    availableProviders: [...new Set(models.map(model => model.provider))],
+    checkedAt: new Date().toISOString(),
+  });
 }

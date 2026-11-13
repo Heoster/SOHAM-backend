@@ -237,14 +237,25 @@ async function newsSearch(query: string): Promise<SohamToolResult> {
   const safeQuery = sanitizeQuery(query) || 'latest technology news';
   const apiKey = process.env.GNEWS_API_KEY;
 
-  if (!apiKey) {
-    return {
-      tool: 'news_search',
-      query: safeQuery,
-      ok: false,
-      output: 'GNews API key is not configured (GNEWS_API_KEY).',
-    };
-  }
+  const freeFallback = async (): Promise<SohamToolResult> => {
+    try {
+      const fallback = await searchDuckDuckGo(`latest news ${safeQuery}`);
+      const results = fallback.results.slice(0, 5);
+      return {
+        tool: 'news_search',
+        query: safeQuery,
+        ok: results.length > 0,
+        output: results.length > 0
+          ? results.map((item, i) => `${i + 1}. ${item.title}: ${item.snippet}`).join('\n')
+          : 'No recent news articles found from the free search fallback.',
+        sources: results.map(item => ({ title: item.title, url: item.url })),
+      };
+    } catch (error) {
+      return { tool: 'news_search', query: safeQuery, ok: false, output: `News providers unavailable: ${String(error)}` };
+    }
+  };
+
+  if (!apiKey) return freeFallback();
 
   try {
     const data = await fetchJson<{
@@ -254,9 +265,7 @@ async function newsSearch(query: string): Promise<SohamToolResult> {
     );
 
     const articles = data.articles || [];
-    if (articles.length === 0) {
-      return { tool: 'news_search', query: safeQuery, ok: true, output: 'No recent news articles found.' };
-    }
+    if (articles.length === 0) return freeFallback();
 
     const output = articles
       .map((a, i) => `${i + 1}. ${a.title} (${a.source?.name || 'Unknown source'}, ${a.publishedAt || 'N/A'})`)
@@ -269,8 +278,8 @@ async function newsSearch(query: string): Promise<SohamToolResult> {
       output,
       sources: articles.map(a => ({ title: a.title, url: a.url })),
     };
-  } catch (error) {
-    return { tool: 'news_search', query: safeQuery, ok: false, output: `News lookup failed: ${String(error)}` };
+  } catch {
+    return freeFallback();
   }
 }
 

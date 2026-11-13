@@ -5,7 +5,7 @@
  */
 
 import { getModelRegistry } from './model-registry';
-import type { ModelConfig, ModelCategory } from './model-config';
+import { AIServiceError, type ModelConfig, type ModelCategory, type ProviderType } from './model-config';
 import { getAdapter } from '../adapters';
 import type { GenerateRequest, GenerateResponse } from '../adapters/types';
 
@@ -23,6 +23,8 @@ interface CircuitState {
 }
 
 const circuitBreakers = new Map<string, CircuitState>();
+const providerCooldowns = new Map<ProviderType, number>();
+const PROVIDER_COOLDOWN_MS = 30_000;
 
 function isCircuitOpen(modelId: string): boolean {
   const state = circuitBreakers.get(modelId);
@@ -53,6 +55,43 @@ function recordFailure(modelId: string): void {
 function recordSuccess(modelId: string): void {
   const state = circuitBreakers.get(modelId);
   if (state) { state.failures = []; state.openUntil = 0; }
+}
+
+function isProviderCoolingDown(provider: ProviderType): boolean {
+  const until = providerCooldowns.get(provider) ?? 0;
+  if (Date.now() >= until) {
+    providerCooldowns.delete(provider);
+    return false;
+  }
+  return true;
+}
+
+function recordProviderFailure(provider: ProviderType, error: unknown): void {
+  if (!(error instanceof AIServiceError)) {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (/fetch failed|network|timeout|econn|etimedout/.test(message)) {
+      providerCooldowns.set(provider, Date.now() + PROVIDER_COOLDOWN_MS);
+    }
+    return;
+  }
+  if (error.code === 'AUTH_ERROR') {
+    // Bad credentials affect every model for this provider. Re-check during the
+    // registry's periodic refresh rather than sending a request per model.
+    getModelRegistry().markProviderUnavailable(provider);
+  } else if (error.code === 'RATE_LIMIT' || error.code === 'NETWORK_ERROR') {
+    providerCooldowns.set(provider, Date.now() + PROVIDER_COOLDOWN_MS);
+  }
+}
+
+
+function modelSupportsRequestedGroqTools(model: ModelConfig, request: Pick<GenerateRequest, 'groqBuiltinTools' | 'enableLocalToolCalling'>): boolean {
+  const hasBuiltins = Boolean(request.groqBuiltinTools?.length);
+  const hasLocalTools = request.enableLocalToolCalling === true;
+  if (!hasBuiltins && !hasLocalTools) return true;
+  if (model.provider !== 'groq') return false;
+  if (hasBuiltins && !['openai/gpt-oss-120b', 'openai/gpt-oss-20b'].includes(model.modelId)) return false;
+  if (hasLocalTools && !['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'].includes(model.modelId)) return false;
+  return true;
 }
 
 interface FallbackAttempt {
@@ -121,16 +160,14 @@ function isCriticalFailure(error: unknown): boolean {
 
 /**
  * Get fallback models for a given category.
- * Rotates across ALL providers so every model gets used over time.
- * Within each provider, highest-priority models come first.
- * Fast providers (Cerebras, Groq) are tried before slower ones.
+ * Spreads fallback attempts across the supported providers before retrying
+ * another model at the same provider. Highest-priority models come first.
  */
 function getFallbackModels(category: ModelCategory): ModelConfig[] {
   const registry = getModelRegistry();
 
-  // Provider rotation order — fastest providers first
-  // Cerebras is the fastest inference hardware, then Groq, then Google, HF, OpenRouter
-  const providerOrder = ['cerebras', 'groq', 'google', 'openrouter', 'huggingface'];
+  // Prefer Groq for low latency, then Google, Cloudflare, and OpenRouter.
+  const providerOrder = ['groq', 'google', 'openrouter'];
 
   const categoryModels = registry.getModelsByCategory(category);
   const allModels = registry.getAvailableModels();
@@ -146,7 +183,7 @@ function getFallbackModels(category: ModelCategory): ModelConfig[] {
   }
 
   // Interleave: take top models from each provider in rotation order
-  // This ensures Auto mode cycles through Cerebras → Groq → Google → OpenRouter → HF
+  // This ensures fallback attempts cover each configured provider
   const result: ModelConfig[] = [];
   const maxPerProvider = 3;
 
@@ -268,7 +305,7 @@ export async function generateWithSmartFallback(
     if (seen.has(id)) return;
     seen.add(id);
     const m = registry.getModel(id);
-    if (m && registry.isModelAvailable(id)) modelsToTry.push(m);
+    if (m && registry.isModelAvailable(id) && modelSupportsRequestedGroqTools(m, request)) modelsToTry.push(m);
   };
 
   // 1. Walk the custom chain first (respects auto-router intent order)
@@ -284,22 +321,27 @@ export async function generateWithSmartFallback(
     getFallbackModels(request.category).forEach(m => addModel(m.id));
   }
 
-  // 4. All available models as last resort
-  if (modelsToTry.length === 0) {
-    registry.getAvailableModels().forEach(m => addModel(m.id));
-  }
+  // Always add the remaining providers as cross-category fallbacks. Restricting
+  // to a non-empty category pool previously hid Google/vision models from chat.
+  registry.getAvailableModels().forEach(m => addModel(m.id));
 
   if (modelsToTry.length === 0) {
     throw new Error('No models available. Please check your API key configuration.');
   }
 
-  const maxModelsToTry = Math.min(modelsToTry.length, 8);
+  const maxModelsToTry = Math.min(modelsToTry.length, 12);
 
   for (let i = 0; i < maxModelsToTry; i++) {
     const model = modelsToTry[i];
 
     if (Date.now() - startTime > MAX_TOTAL_TIME) {
       throw new Error('Request timeout - exceeded maximum processing time');
+    }
+
+    // Skip providers with invalid credentials or a temporary provider-wide outage.
+    if (!registry.isProviderAvailable(model.provider) || isProviderCoolingDown(model.provider)) {
+      console.log(`[Fallback] Skipping ${model.provider} — provider unavailable or cooling down`);
+      continue;
     }
 
     // Skip models whose circuit breaker is open
@@ -318,6 +360,7 @@ export async function generateWithSmartFallback(
       attempts.push({ modelId: model.id, error: errorMessage, timestamp: Date.now() });
       console.error(`Failed to generate with ${model.name}:`, errorMessage);
       recordFailure(model.id);
+      recordProviderFailure(model.provider, error);
 
       if (isCriticalFailure(error) && i < maxModelsToTry - 1) {
         fallbackTriggered = true;
@@ -330,7 +373,10 @@ export async function generateWithSmartFallback(
     }
   }
 
-  throw new Error('Failed to generate response with any available model');
+  const lastAttempt = attempts[attempts.length - 1];
+  throw new Error(lastAttempt
+    ? `All models failed. Last error: ${lastAttempt.error}. Attempted: ${attempts.map(a => a.modelId).join(', ')}`
+    : 'No available model remained after provider and circuit-breaker checks.');
 }
 
 /**
@@ -345,7 +391,7 @@ export async function* streamWithSmartFallback(
     category?: ModelCategory;
   },
   onModelSelected?: (modelId: string) => void
-): AsyncGenerator<string, { modelUsed: string; fallbackTriggered: boolean }, unknown> {
+): AsyncGenerator<string, { modelUsed: string; fallbackTriggered: boolean; toolsUsed?: string[] }, unknown> {
   const registry = getModelRegistry();
   const startTime = Date.now();
   const MAX_TOTAL_TIME = 55000;
@@ -358,19 +404,20 @@ export async function* streamWithSmartFallback(
     if (seen.has(id)) return;
     seen.add(id);
     const m = registry.getModel(id);
-    if (m && registry.isModelAvailable(id)) modelsToTry.push(m);
+    if (m && registry.isModelAvailable(id) && modelSupportsRequestedGroqTools(m, request)) modelsToTry.push(m);
   };
 
   if (request.modelChain?.length) request.modelChain.forEach(addModel);
   if (request.preferredModelId) addModel(request.preferredModelId);
   if (request.category) getFallbackModels(request.category).forEach(m => addModel(m.id));
-  if (modelsToTry.length === 0) registry.getAvailableModels().forEach(m => addModel(m.id));
+  registry.getAvailableModels().forEach(m => addModel(m.id));
 
   if (modelsToTry.length === 0) {
     throw new Error('No models available. Please check your API key configuration.');
   }
 
-  const maxModelsToTry = Math.min(modelsToTry.length, 8);
+  const maxModelsToTry = Math.min(modelsToTry.length, 12);
+  const failures: string[] = [];
 
   for (let i = 0; i < maxModelsToTry; i++) {
     const model = modelsToTry[i];
@@ -383,6 +430,12 @@ export async function* streamWithSmartFallback(
       continue;
     }
 
+    // Skip providers with invalid credentials or a temporary provider-wide outage.
+    if (!registry.isProviderAvailable(model.provider) || isProviderCoolingDown(model.provider)) {
+      console.log(`[Fallback] Skipping ${model.provider} — provider unavailable or cooling down`);
+      continue;
+    }
+
     // Skip models whose circuit breaker is open
     if (isCircuitOpen(model.id)) {
       console.log(`[Stream] Skipping ${model.id} — circuit open`);
@@ -390,35 +443,57 @@ export async function* streamWithSmartFallback(
     }
 
     const adapter = getAdapter(model.provider);
+    let streamedTokens = 0;
 
     try {
       console.log(`[Stream] Attempting ${model.name} (${model.id})...`);
       onModelSelected?.(model.id);
 
-      if (adapter.generateStream) {
+      if (request.groqBuiltinTools?.length || request.enableLocalToolCalling) {
+        const response = await adapter.generate({ ...request, model });
+        if (!response.text?.trim()) throw new Error(`${model.provider} returned an empty completion`);
+        streamedTokens++;
+        yield response.text;
+        recordSuccess(model.id);
+        return { modelUsed: model.id, fallbackTriggered: i > 0, toolsUsed: response.toolsUsed };
+      } else if (adapter.generateStream) {
         const subGen = adapter.generateStream({ ...request, model });
         let next = await subGen.next();
         while (!next.done) {
+          streamedTokens++;
           yield next.value;
           next = await subGen.next();
         }
       } else {
         const response = await adapter.generate({ ...request, model });
+        if (!response.text?.trim()) throw new Error(`${model.provider} returned an empty completion`);
+        streamedTokens++;
         yield response.text;
       }
+      if (streamedTokens === 0) throw new Error(`${model.provider} returned an empty stream`);
 
       recordSuccess(model.id);
       return { modelUsed: model.id, fallbackTriggered: i > 0 };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[Stream] Failed with ${model.name}:`, errorMessage);
+      const diagnostic = error && typeof error === 'object' && 'diagnostic' in error
+        ? String((error as { diagnostic: unknown }).diagnostic)
+        : errorMessage;
+      console.error(`[Stream] Failed with ${model.name} (${model.provider}/${model.modelId}):`, diagnostic);
+      failures.push(`${model.provider}/${model.modelId}: ${diagnostic}`);
       recordFailure(model.id);
+      recordProviderFailure(model.provider, error);
+      // Once any token has been sent, switching providers would splice two answers
+      // together. Only retry failures that occur before output begins.
+      if (streamedTokens > 0) throw new Error(`Stream interrupted by ${model.provider}; retry the request.`);
       if (i < maxModelsToTry - 1) continue;
       throw new Error(`All models failed. Last error: ${errorMessage}`);
     }
   }
 
-  throw new Error('Failed to generate streaming response with any available model');
+  throw new Error(failures.length
+    ? `All models failed. Last error: ${failures[failures.length - 1]}. Attempted: ${failures.length}`
+    : 'No available model remained after provider and circuit-breaker checks.');
 }
 
 /**
@@ -427,8 +502,12 @@ export async function* streamWithSmartFallback(
 export function getFriendlyErrorMessage(error: unknown): string {
   const errorMessage = error instanceof Error ? error.message : String(error);
   
-  if (errorMessage.includes('API key') || errorMessage.includes('GROQ_API_KEY')) {
-    return 'Please configure your Groq API key. Get a free key at https://console.groq.com/keys';
+  if (errorMessage.toLowerCase().includes('no models available')) {
+    return 'No enabled free-plan provider credentials are configured. Set GOOGLE_API_KEY or OPENROUTER_API_KEY, or provide GROQ_API_KEY with GROQ_FREE_PLAN_ONLY=true for a confirmed Groq Free-plan account.';
+  }
+
+  if (errorMessage.toLowerCase().includes('stream interrupted')) {
+    return 'The provider connection dropped during the response. Please retry your message.';
   }
   
   if (errorMessage.includes('Model is currently loading')) {
@@ -444,7 +523,7 @@ export function getFriendlyErrorMessage(error: unknown): string {
   }
   
   if (errorMessage.includes('All models failed')) {
-    return 'All AI providers (Groq, Cerebras, Google Gemini, OpenRouter, Hugging Face) are currently unavailable. Please check your API keys and try again in a few minutes.';
+    return 'All configured AI providers (Groq, Google Gemini, Cloudflare Workers AI, and OpenRouter) are currently unavailable. Check provider credentials and model access, then try again.';
   }
   
   return 'An unexpected error occurred. Please try again.';

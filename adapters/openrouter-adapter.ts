@@ -29,6 +29,7 @@ interface OpenRouterStreamChunk {
     delta?: { content?: string };
     finish_reason?: string | null;
   }>;
+  error?: { message?: string };
 }
 
 export class OpenRouterAdapter extends BaseProviderAdapter {
@@ -55,14 +56,14 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
 
       const response = await fetch(OPENROUTER_API_URL, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+          'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'https://soham-ai.vercel.app',
           'X-Title': 'SOHAM',
         },
         body: JSON.stringify({
@@ -127,7 +128,7 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+        'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'https://soham-ai.vercel.app',
         'X-Title': 'SOHAM',
       },
       body: JSON.stringify({
@@ -166,13 +167,17 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
           if (!trimmed.startsWith('data: ')) continue;
           const data = trimmed.slice(6);
           if (data === '[DONE]') return;
+          let chunk: OpenRouterStreamChunk;
           try {
-            const chunk = JSON.parse(data) as OpenRouterStreamChunk;
-            const token = chunk.choices?.[0]?.delta?.content;
-            if (token) yield token;
+            chunk = JSON.parse(data) as OpenRouterStreamChunk;
           } catch {
-            // malformed chunk — skip
+            continue;
           }
+          if (chunk.error?.message) {
+            throw createUserFriendlyError(new Error(chunk.error.message), 'openrouter', model.id);
+          }
+          const token = chunk.choices?.[0]?.delta?.content;
+          if (token) yield token;
         }
       }
     } finally {

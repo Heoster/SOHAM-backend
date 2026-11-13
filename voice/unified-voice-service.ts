@@ -2,19 +2,16 @@
  * Unified Voice Service
  * Handles both STT and TTS with intelligent fallback chains
  * 
- * STT Chain: Groq Whisper → Browser Web Speech API
- * TTS Chain: Groq Orpheus → ElevenLabs → Browser TTS
+ * STT and TTS use browser-provided APIs only; provider-backed speech is disabled to avoid paid inference.
  */
 
-import { getGroqSTTService, type STTResult, type STTOptions } from './groq-stt-service';
-import { getGroqTTSService, type TTSResult, type TTSOptions } from './groq-tts-service';
+import type { STTResult, STTOptions } from './groq-stt-service';
+import type { TTSResult, TTSOptions } from './groq-tts-service';
 
 /**
  * Unified Voice Service
  */
 export class UnifiedVoiceService {
-  private groqSTT = getGroqSTTService();
-  private groqTTS = getGroqTTSService();
 
   /**
    * Speech-to-Text with fallback chain
@@ -22,16 +19,6 @@ export class UnifiedVoiceService {
    * Fallback: Browser Web Speech API
    */
   async speechToText(audio: Blob | File, options?: STTOptions): Promise<STTResult> {
-    // Try Groq Whisper first
-    if (this.groqSTT.isAvailable()) {
-      try {
-        return await this.groqSTT.transcribe(audio, options);
-      } catch (error) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('[Unified Voice] Groq STT failed, falling back to browser:', error);
-        }
-      }
-    }
     return {
       text: '', // Browser API is handled client-side
       provider: 'browser',
@@ -46,28 +33,6 @@ export class UnifiedVoiceService {
    * Fallback 2: Browser TTS
    */
   async textToSpeech(text: string, options?: TTSOptions): Promise<TTSResult> {
-    // Try Groq Orpheus first
-    if (this.groqTTS.isAvailable()) {
-      try {
-        return await this.groqTTS.generateSpeech(text, options);
-      } catch (error) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('[Unified Voice] Groq TTS failed, trying ElevenLabs:', error);
-        }
-      }
-    }
-
-    // Try ElevenLabs
-    if (process.env.ELEVENLABS_API_KEY) {
-      try {
-        return await this.elevenLabsTTS(text, options);
-      } catch (error) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('[Unified Voice] ElevenLabs failed, falling back to browser:', error);
-        }
-      }
-    }
-
     // Fallback to browser TTS
     return {
       audio: new ArrayBuffer(0), // Browser TTS is handled client-side
@@ -135,7 +100,7 @@ export class UnifiedVoiceService {
     browser: boolean;
   } {
     return {
-      groq: this.groqSTT.isAvailable(),
+      groq: false,
       browser: false,
     };
   }
@@ -149,7 +114,7 @@ export class UnifiedVoiceService {
     browser: boolean;
   } {
     return {
-      groq: this.groqTTS.isAvailable(),
+      groq: false,
       elevenlabs: !!process.env.ELEVENLABS_API_KEY,
       browser: false,
     };

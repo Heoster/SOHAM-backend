@@ -2,7 +2,7 @@
  * Provider Adapter Types
  * ──────────────────────
  * Common interface for all AI provider adapters.
- * Providers: Groq, Google Gemini, Cerebras, HuggingFace, OpenRouter
+ * Providers: Groq, Google Gemini, OpenRouter, Cloudflare Workers AI
  */
 
 import type { ModelConfig, ModelParams, ProviderType } from '../routing/model-config';
@@ -12,12 +12,18 @@ export interface MessageData {
   content: string | Array<{ text: string }>;
 }
 
+export type GroqBuiltinTool = 'browser_search' | 'code_interpreter';
+
 export interface GenerateRequest {
   model: ModelConfig;
   prompt: string;
   systemPrompt?: string;
   history?: MessageData[];
   params?: Partial<ModelParams>;
+  /** Groq-hosted tools available on GPT-OSS only; not sent to other providers. */
+  groqBuiltinTools?: GroqBuiltinTool[];
+  /** Enable the server-side allowlisted local tool loop for Groq function-calling models. */
+  enableLocalToolCalling?: boolean;
 }
 
 export interface GenerateResponse {
@@ -27,6 +33,7 @@ export interface GenerateResponse {
     promptTokens: number;
     completionTokens: number;
   };
+  toolsUsed?: string[];
 }
 
 export interface ProviderAdapter {

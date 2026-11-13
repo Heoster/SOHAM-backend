@@ -63,7 +63,7 @@ import {
   storeCorrectionHandler,
   storeSuggestionHandler,
 } from './routes/memory/knowledge';
-import { healthHandler } from './routes/health';
+import { healthHandler, healthLiveHandler, healthReadyHandler } from './routes/health';
 import { translateHandler } from './routes/ai/translate';
 import { sentimentHandler } from './routes/ai/sentiment';
 import { classifyHandler } from './routes/ai/classify';
@@ -168,7 +168,7 @@ app.use((req, _res, next) => {
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
 app.use('/api', (req: Request, res: Response, next: NextFunction) => {
-  if (req.path === '/health' || req.path === '/health/') return next();
+  if (req.path === '/health' || req.path === '/health/' || req.path.startsWith('/health/')) return next();
 
   const authHeader = req.headers.authorization;
   if (!SOHAM_API_KEY || !authHeader || authHeader !== `Bearer ${SOHAM_API_KEY}`) {
@@ -198,6 +198,9 @@ app.get('/', (_req, res) => {
 
 // ── Health (no auth, no rate limit, no timeout) ────────────────────────────────
 app.get('/api/health', healthHandler);
+app.get('/api/health/live', healthLiveHandler);
+app.get('/api/health/ready', healthReadyHandler);
+app.get('/api/health/services', healthHandler);
 
 // ── Chat (60s timeout) ─────────────────────────────────────────────────────────
 app.post('/api/chat',             withTimeout(chatHandler,            60_000));
@@ -244,7 +247,7 @@ app.post('/api/memory/knowledge/suggestion',   storeSuggestionHandler);
 // ── 405 Method Not Allowed ────────────────────────────────────────────────────
 // Catches requests to known paths with the wrong HTTP method
 const knownPaths = new Set([
-  '/api/health', '/api/chat', '/api/chat/personality', '/api/chat/stream',
+  '/api/health', '/api/health/live', '/api/health/ready', '/api/health/services', '/api/chat', '/api/chat/personality', '/api/chat/stream',
   '/api/ai/search', '/api/ai/solve', '/api/ai/summarize',
   '/api/ai/image-solver', '/api/ai/pdf-analyzer',
   '/api/ai/translate', '/api/ai/sentiment', '/api/ai/classify',
