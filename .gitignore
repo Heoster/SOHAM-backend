@@ -4,3 +4,6 @@ dist/
 .env.local
 .vscode/
 *.log
+.arena/
+__pycache__/
+*.py[cod]

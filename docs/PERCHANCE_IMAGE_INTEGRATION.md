@@ -1,36 +1,64 @@
 # Perchance image generation in SOHAM
 
-SOHAM includes a browser-only client at `image/perchance-browser-client.ts` for Perchance's documented Image API. Perchance's documented integration is an iframe plus `postMessage`; it is not a backend REST provider. The SOHAM backend must not fetch Perchance pages or use reverse-engineered private endpoints.
+SOHAM now has two browser/server approaches:
 
-## Frontend usage
+- The official browser client in `image/perchance-browser-client.ts` uses Perchance's documented JSONP Image API. It is useful when generation should run in the user's browser.
+- The isolated `perchance-service/` Docker service uses the third-party `eeemoon/perchance` Python package and Playwright/Chromium. This is exposed internally at `POST /perchance`; SOHAM's Node API proxies it at `POST /api/perchance`.
 
-Import `generatePerchanceImage` into the browser-side image-generation flow:
+The Python package is unofficial and automates Perchance's current browser/API flow. It depends on upstream internals and may break if Perchance changes them. There is deliberately no fallback to Cloudflare, Pollinations, or another provider on this route.
 
-```ts
-import { generatePerchanceImage } from './image/perchance-browser-client';
+## SOHAM API usage
 
-const controller = new AbortController();
-try {
-  const result = await generatePerchanceImage({
-    prompt: 'A calm watercolor illustration of a small fox under a blue umbrella',
-    timeoutMs: 60_000,
-    signal: controller.signal,
-  });
-  imageElement.src = result.url;
-} catch (error) {
-  // Show an error and let the user explicitly retry or select a different provider.
-  // Do not silently invoke a potentially billable provider.
+Send the normal SOHAM API key to the Node backend:
+
+```http
+POST /api/perchance
+Authorization: Bearer <SOHAM_API_KEY>
+Content-Type: application/json
+```
+
+```json
+{
+  "prompt": "A warm cinematic illustration of a fox beneath a pine tree in snowfall",
+  "style": "artistic",
+  "shape": "square",
+  "negativePrompt": "text, watermark",
+  "seed": -1,
+  "guidanceScale": 7
 }
 ```
 
-The helper validates Perchance's message origin, API marker, matching request ID, and HTTPS result URL. It removes its hidden iframe/listeners on success, failure, abort, or timeout, and caps concurrent requests at two. It does not automatically fall back to Cloudflare or another image provider.
+The response is JSON with `success`, `provider: "perchance"`, `imageUrl` (a data URL), `enhancedPrompt`, `contentType`, and Perchance image metadata. A timeout or upstream error is returned explicitly; no other provider is called.
 
-## UI requirements
+The Python service's `POST /perchance` route is protected by `X-Perchance-Service-Token`. Render Blueprints generate that secret and pass it to the Node backend over Render's private service network. `GET /healthz` is a liveness/capability check only and does not make a generation request.
 
-- Add a Perchance option to the frontend's image-provider control; it runs in the browser, unlike `/api/image/generate`.
-- Show loading/cancel/error states. Perchance may be unavailable, change its message protocol, or block iframe requests.
-- Display the returned `url` directly. If SOHAM should copy it into its own storage, implement an explicit, server-validated upload flow separately; do not send service-role credentials to the browser.
-- Keep the existing Cloudflare image route and its opt-in/cost gate unchanged.
-- The backend health report exposes `image.perchanceBrowser` as an integration capability. It is not a live Perchance reachability probe.
+## Render setup
 
-Official documentation: <https://perchance.org/perchance-ai-api>
+The root `render.yaml` defines both services in Oregon on the Free plan:
+
+- `soham-backend-server` (Node) — the public, SOHAM-authenticated `/api/perchance` route.
+- `soham-perchance` (Docker) — a separate Playwright/Chromium runtime, with the internal `/perchance` route.
+
+Deploy the Blueprint in Render. The Docker service installs the package at a pinned Git commit and downloads its matching Chromium browser and Debian libraries during image build. Do not expose `PERCHANCE_SERVICE_TOKEN` to the frontend or commit a copy of it.
+
+**Free-tier caveat:** Render Free web services have 512 MB RAM and 0.1 CPU and spin down after 15 minutes idle. A cold start can add about a minute; Chromium image generation may exceed the available memory or time out. This configuration is a best-effort free-tier deployment, not a guarantee of reliable live image generation. A failed Perchance request stays a Perchance failure; it will not silently invoke another provider. See Render's [free instance limits](https://render.com/docs/free) and [compute plans](https://render.com/docs/compute-plans).
+
+## Browser-client usage
+
+For direct browser generation, `generateSOHAMPrimaryImage` applies SOHAM prompt enhancement and style hints, then uses Perchance's documented JSONP API:
+
+```ts
+import { generateSOHAMPrimaryImage } from './image/perchance-browser-client';
+
+const result = await generateSOHAMPrimaryImage({
+  prompt: 'A calm watercolor illustration of a small fox under a blue umbrella',
+  style: 'artistic',
+  timeoutMs: 180_000,
+});
+imageElement.src = result.url;
+```
+
+That path does not use the Python service. It performs Perchance's recommended best-effort origin warm-up, validates the HTTPS result URL, and does not fall back to another provider.
+
+Official Perchance API documentation: <https://perchance.org/perchance-ai-api>
+Unofficial package: <https://github.com/eeemoon/perchance>

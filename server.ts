@@ -53,6 +53,7 @@ import { imageSolverHandler } from './routes/ai/image-solver';
 import { pdfAnalyzerHandler } from './routes/ai/pdf-analyzer';
 import { generateImageHandler } from './routes/image/generate';
 import { generateImageCFHandler } from './routes/image/generate-cf';
+import { perchanceImageHandler } from './routes/image/perchance';
 import { ttsHandler } from './routes/voice/tts';
 import { transcribeHandler } from './routes/voice/transcribe';
 import { extractMemoriesHandler } from './routes/memory/extract';
@@ -226,9 +227,11 @@ app.post('/api/ai/fact-check',   withTimeout(factCheckHandler,   60_000));
 app.post('/api/ai/image-solver', withTimeout(imageSolverHandler,  120_000));
 app.post('/api/ai/pdf-analyzer', withTimeout(pdfAnalyzerHandler,  120_000));
 
-// ── Image Generation (90s timeout) ────────────────────────────────────────────
+// ── Image Generation ──────────────────────────────────────────────────────────
 app.post('/api/image/generate',    withTimeout(generateImageHandler,   90_000));
 app.post('/api/image/generate-cf', withTimeout(generateImageCFHandler, 90_000));
+// Free Render cold starts plus Playwright image generation can take several minutes.
+app.post('/api/perchance',         withTimeout(perchanceImageHandler,  360_000));
 
 // ── Voice (60s timeout) ───────────────────────────────────────────────────────
 app.post('/api/voice/tts',        withTimeout(ttsHandler,        60_000));
@@ -253,7 +256,7 @@ const knownPaths = new Set([
   '/api/ai/translate', '/api/ai/sentiment', '/api/ai/classify',
   '/api/ai/grammar', '/api/ai/quiz', '/api/ai/recipe',
   '/api/ai/joke', '/api/ai/dictionary', '/api/ai/fact-check',
-  '/api/image/generate', '/api/image/generate-cf',
+  '/api/image/generate', '/api/image/generate-cf', '/api/perchance',
   '/api/voice/tts', '/api/voice/transcribe',
   '/api/memory/extract', '/api/memory/knowledge',
   '/api/memory/knowledge/search', '/api/memory/knowledge/correction',
@@ -300,6 +303,7 @@ app.use((req: Request, res: Response) => {
       'POST /api/ai/fact-check',
       'POST /api/image/generate',
       'POST /api/image/generate-cf',
+      'POST /api/perchance',
       'POST /api/voice/tts',
       'POST /api/voice/transcribe',
       'POST /api/memory/extract',
