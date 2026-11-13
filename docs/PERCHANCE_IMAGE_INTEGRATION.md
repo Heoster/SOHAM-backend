@@ -30,7 +30,7 @@ Content-Type: application/json
 
 The response is JSON with `success`, `provider: "perchance"`, `imageUrl` (a data URL), `enhancedPrompt`, `contentType`, and Perchance image metadata. A timeout or upstream error is returned explicitly; no other provider is called.
 
-The Python service's `POST /perchance` route is protected by `X-Perchance-Service-Token`. Render Blueprints generate that secret and pass it to the Node backend over Render's private service network. `GET /healthz` is a liveness/capability check only and does not make a generation request.
+The Python service's `POST /perchance` route is protected by `X-Perchance-Service-Token`. Render Blueprints generate that secret and pass it to the Node backend over Render's private service network. If the Python service is hosted separately, set `PERCHANCE_SERVICE_URL` on the Node service to its HTTPS origin; this overrides the internal host/port. Both services must use the same `PERCHANCE_SERVICE_TOKEN`. `GET /healthz` (also `/api/health`) is a liveness/capability check only and does not make a generation request.
 
 ## Render setup
 

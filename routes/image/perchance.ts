@@ -61,15 +61,20 @@ export async function perchanceImageHandler(req: Request, res: Response): Promis
     : ratioHeight > ratioWidth ? 'portrait' : 'square';
 
   const hostport = process.env.PERCHANCE_SERVICE_HOSTPORT;
+  const serviceBaseUrl = process.env.PERCHANCE_SERVICE_URL?.trim();
   const token = process.env.PERCHANCE_SERVICE_TOKEN;
-  if (!hostport || !token) {
+  if ((!hostport && !serviceBaseUrl) || !token) {
     res.status(503).json({ error: 'PERCHANCE_NOT_CONFIGURED', message: 'Perchance service is not configured' });
     return;
   }
 
   let serviceUrl: URL;
   try {
-    serviceUrl = new URL('/perchance', `http://${hostport}`);
+    const baseUrl = new URL(serviceBaseUrl || `http://${hostport}`);
+    if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
+      throw new Error('Invalid service URL protocol or credentials');
+    }
+    serviceUrl = new URL('/perchance', baseUrl);
   } catch {
     res.status(503).json({ error: 'PERCHANCE_NOT_CONFIGURED', message: 'Perchance service address is invalid' });
     return;
