@@ -12,7 +12,7 @@
     "setup": "node setup.js",
     "typecheck": "tsc --noEmit",
     "test:intent": "node -r ts-node/register/transpile-only scripts/eval-intent-detector.ts",
-    "test:perchance": "node -r ts-node/register/transpile-only scripts/test-perchance-browser-client.ts",
+    "test:perchance": "node -r ts-node/register/transpile-only scripts/test-perchance-browser-client.ts && node -r ts-node/register/transpile-only scripts/test-perchance-proxy.ts",
     "lint": "eslint . --ext .ts",
     "health": "node dist/server.js --health",
     "prod": "NODE_ENV=production node dist/server.js"
