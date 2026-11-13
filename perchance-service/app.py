@@ -13,11 +13,13 @@ import logging
 import mimetypes
 import os
 import time
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,7 +31,14 @@ SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
 GENERATION_TIMEOUT_SECONDS = 240
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 DEFAULT_TEST_PROMPT = "A small blue bird perched on a pine branch at sunrise, detailed illustration"
+# The fallback window starts when the service process starts. Set an explicit
+# PERCHANCE_PUBLIC_GET_EXPIRES_AT UTC timestamp in production for a fixed deadline.
+DEFAULT_PUBLIC_GET_EXPIRES_AT = (datetime.now(timezone.utc) + timedelta(hours=72)).isoformat()
+PUBLIC_GET_MAX_PER_IP_PER_HOUR = 3
+PUBLIC_GET_MAX_TOTAL_PER_HOUR = 10
 STARTED_AT = time.time()
+_public_get_events_by_ip: dict[str, deque[float]] = defaultdict(deque)
+_public_get_global_events: deque[float] = deque()
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(SERVICE_NAME)
@@ -161,6 +170,44 @@ def _package_version(package: str) -> str | None:
         return None
 
 
+def _public_get_expiry() -> datetime | None:
+    raw = os.getenv("PERCHANCE_PUBLIC_GET_EXPIRES_AT", DEFAULT_PUBLIC_GET_EXPIRES_AT).strip()
+    if not raw:
+        return None
+    try:
+        expiry = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry.astimezone(timezone.utc)
+    except ValueError:
+        logger.error("PERCHANCE_PUBLIC_GET_EXPIRES_AT must be an ISO-8601 timestamp")
+        return None
+
+
+def _consume_public_get_quota(client_ip: str) -> datetime:
+    expiry = _public_get_expiry()
+    now_utc = datetime.now(timezone.utc)
+    if expiry is None:
+        raise HTTPException(status_code=503, detail="Temporary public GET is disabled or has an invalid expiry")
+    if now_utc >= expiry:
+        raise HTTPException(status_code=410, detail="Temporary public GET test window has expired")
+
+    now = time.time()
+    cutoff = now - 3600
+    events = _public_get_events_by_ip[client_ip]
+    while events and events[0] <= cutoff:
+        events.popleft()
+    while _public_get_global_events and _public_get_global_events[0] <= cutoff:
+        _public_get_global_events.popleft()
+
+    if len(events) >= PUBLIC_GET_MAX_PER_IP_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Public GET limit reached for this IP; retry later")
+    if len(_public_get_global_events) >= PUBLIC_GET_MAX_TOTAL_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Temporary public GET service limit reached; retry later")
+
+    events.append(now)
+    _public_get_global_events.append(now)
+    return expiry
+
+
 async def _runtime_status() -> dict[str, object]:
     """Check the local Playwright driver and Chromium binary, cached for 30s.
 
@@ -210,7 +257,8 @@ async def root() -> dict[str, object]:
             "liveness": "GET /health/live",
             "readiness": "GET /health/ready or GET /api/health",
             "diagnostics": "GET /api/test",
-            "generation": "POST /perchance",
+            "generation": "POST /perchance (token required)",
+            "temporaryPublicGet": "GET /perchance/generate?prompt=... (tokenless until expiry, rate-limited)",
             "liveGenerationTest": "POST /api/test/generate",
             "openapi": "GET /openapi.json",
             "swaggerUi": "GET /docs",
@@ -218,6 +266,15 @@ async def root() -> dict[str, object]:
         },
         "authentication": {
             "serverRoutes": "X-Perchance-Service-Token is required for POST /perchance and POST /api/test/generate",
+            "temporaryPublicGet": {
+                "route": "GET /perchance/generate",
+                "tokenRequired": False,
+                "expiresAt": _public_get_expiry().isoformat() if _public_get_expiry() else None,
+                "limits": {
+                    "perIpPerHour": PUBLIC_GET_MAX_PER_IP_PER_HOUR,
+                    "globalPerHour": PUBLIC_GET_MAX_TOTAL_PER_HOUR,
+                },
+            },
             "browserStudio": "GET /studio does not expose or require the service token",
         },
         "generation": {
@@ -318,12 +375,18 @@ async def diagnostics() -> dict[str, object]:
     }
 
 
-async def _generate_image(body: PerchanceRequest, supplied_token: str | None, live_test: bool = False) -> Response:
-    expected_token = os.getenv("PERCHANCE_SERVICE_TOKEN", "")
-    if not expected_token:
-        raise HTTPException(status_code=503, detail="PERCHANCE_SERVICE_TOKEN is not configured")
-    if not supplied_token or not hmac.compare_digest(supplied_token, expected_token):
-        raise HTTPException(status_code=401, detail="Unauthorized: provide X-Perchance-Service-Token")
+async def _generate_image(
+    body: PerchanceRequest,
+    supplied_token: str | None,
+    live_test: bool = False,
+    require_token: bool = True,
+) -> Response:
+    if require_token:
+        expected_token = os.getenv("PERCHANCE_SERVICE_TOKEN", "")
+        if not expected_token:
+            raise HTTPException(status_code=503, detail="PERCHANCE_SERVICE_TOKEN is not configured")
+        if not supplied_token or not hmac.compare_digest(supplied_token, expected_token):
+            raise HTTPException(status_code=401, detail="Unauthorized: provide X-Perchance-Service-Token")
 
     prompt = body.prompt.strip()
     if not prompt:
@@ -394,6 +457,34 @@ async def generate(
 ) -> Response:
     """Generate and return image bytes. See GET /perchance for request details."""
     return await _generate_image(body, x_perchance_service_token)
+
+
+@app.get("/perchance/generate", summary="Temporary public tokenless GET generation test")
+async def temporary_public_get_generate(
+    request: Request,
+    prompt: str = Query(min_length=1, max_length=1500),
+    shape: Literal["portrait", "square", "landscape"] = Query(default="square"),
+    negative_prompt: str | None = Query(default=None, alias="negativePrompt", max_length=500),
+    seed: int = Query(default=-1, ge=-1, le=2**31 - 1),
+    guidance_scale: float = Query(default=7.0, alias="guidanceScale", ge=1.0, le=30.0),
+) -> Response:
+    """Temporary public GET endpoint. Expires at the configured UTC deadline."""
+    # Use the ASGI peer address, not client-supplied forwarding headers, for quota identity.
+    client_ip = request.client.host if request.client else "unknown"
+    expiry = _consume_public_get_quota(client_ip)
+    body = PerchanceRequest(
+        prompt=prompt,
+        shape=shape,
+        negativePrompt=negative_prompt,
+        seed=seed,
+        guidanceScale=guidance_scale,
+    )
+    response = await _generate_image(body, supplied_token=None, require_token=False)
+    response.headers["X-Perchance-Public-GET-Expires-At"] = expiry.isoformat()
+    response.headers["X-Perchance-Public-GET-Limit"] = (
+        f"{PUBLIC_GET_MAX_PER_IP_PER_HOUR}/ip/hour;{PUBLIC_GET_MAX_TOTAL_PER_HOUR}/service/hour"
+    )
+    return response
 
 
 @app.post("/api/test/generate", summary="Run a live Perchance generation test")
