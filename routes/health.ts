@@ -544,6 +544,11 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
   };
 
   let image: Record<string, ProviderHealth> = {
+    perchanceBrowser: {
+      status: 'ok', configured: true, required: false,
+      description: 'Browser-only Perchance Image API client; use the official iframe/postMessage flow. Reachability is not probed by the backend.',
+      keyEnvVar: 'none', docsUrl: 'https://perchance.org/perchance-ai-api',
+    },
     cloudflare: envCheck(
       ['ENABLE_CLOUDFLARE_IMAGE_AI', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_AI_API_TOKEN'], false,
       'Cloudflare Workers AI image generation (explicit opt-in; may be billable over free quota)',
