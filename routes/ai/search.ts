@@ -4,10 +4,10 @@
  * SOHAM Search Endpoint — Full 6-Step Pipeline
  *
  * Sources:
- *   Tavily (primary, real-time)  →  TAVILY_API_KEY
- *   Firecrawl (deep extraction)  →  FIRECRAWL_API_KEY
- *   GNews / CricAPI / Alpha Vantage (domain-specific, optional)
- *   Wikipedia + DuckDuckGo (free fallbacks, always available)
+ *   Tavily / You.com / Brave / SerpApi / Jina / Firecrawl (optional search providers)
+ *   GNews / NewsAPI.org / Google News RSS (news and recent-article providers)
+ *   Firecrawl (optional page enrichment)
+ *   Wikipedia / DuckDuckGo (free fallbacks, always available)
  *
  * Request Body:
  * ┌─────────────────┬──────────┬──────────────────────────────────────────┐
@@ -30,8 +30,8 @@
  *
  * Pipeline Steps:
  *   Step 1 → Query Analysis   (type, entities, clean terms)
- *   Step 2 → Source Selection (Tavily → Firecrawl → domain tools → free fallbacks)
- *   Step 3 → Parallel Fetch   (Tavily) + Firecrawl enrichment on top URLs
+ *   Step 2 → Source Selection (configured providers + always-on free fallbacks)
+ *   Step 3 → Parallel Fetch   (web/news providers) + optional Firecrawl enrichment
  *   Step 4 → Merge & Rank     (deduplicate, score)
  *   Step 5 → AI Synthesis     (grounded answer from results + full content)
  *   Step 6 → Citation Build   ([1][2][3] references)

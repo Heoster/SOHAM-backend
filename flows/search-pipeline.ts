@@ -28,7 +28,7 @@
  *   FIRECRAWL_API_KEY  https://www.firecrawl.dev  (optional but recommended)
  */
 
-import { runSearchPipeline, type SearchResult, type QueryType } from '../tools/search-engine';
+import { analyzeQuery, runSearchPipeline, type SearchResult, type QueryType } from '../tools/search-engine';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { withDateTime } from '../memory/realtime-knowledge-service';
 
@@ -70,6 +70,7 @@ export interface SearchPipelineOutput {
 
 function buildSynthesisPrompt(query: string, results: SearchResult[], abstract?: string): string {
   const lines: string[] = [];
+  const queryType = analyzeQuery(query).queryType;
 
   lines.push(`Answer the following question using ONLY the search results provided below.`);
   lines.push(`Be accurate, cite sources using [1], [2], etc., and be concise.\n`);
@@ -94,8 +95,10 @@ function buildSynthesisPrompt(query: string, results: SearchResult[], abstract?:
       lines.push(`    URL: ${r.url}`);
       lines.push('');
     });
+  } else if (queryType === 'news' || queryType === 'realtime') {
+    lines.push(`No current search results were found. Do not guess or answer current-event details from training knowledge; state that no verifiable live results were returned.`);
   } else {
-    lines.push(`No search results were found. Answer from your training knowledge, but note this may not be current.`);
+    lines.push(`No search results were found. Answer from your training knowledge only when the question is not time-sensitive, and clearly note any uncertainty.`);
   }
 
   return lines.join('\n');
@@ -106,7 +109,8 @@ const SYNTHESIS_SYSTEM_PROMPT = `You are SOHAM's search synthesis engine. Your j
 Rules:
 - Use ONLY information from the provided search results
 - Cite sources inline using [1], [2], [3] notation
-- If results are insufficient, say so clearly and answer from training knowledge
+- If results are insufficient for a time-sensitive or news query, state that no verifiable current results were found; do not fill in current-event details from training knowledge
+- For non-time-sensitive queries only, use training knowledge cautiously when search results are insufficient
 - Start with a direct answer, then provide all necessary supporting details — do not cut off early
 - Use bullet points for lists, bold for key terms
 - NEVER use markdown headers (# ## ###)

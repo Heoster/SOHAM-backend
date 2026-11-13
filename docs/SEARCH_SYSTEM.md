@@ -55,18 +55,23 @@ User Query
 
 | Tier | Source | Key | Quality | Role |
 |------|--------|-----|---------|------|
-| **1 — Primary** | **Tavily** | `TAVILY_API_KEY` | ⭐⭐⭐⭐⭐ | Real-time web search, AI-optimised |
-| **1 — Enrichment** | **Firecrawl** | `FIRECRAWL_API_KEY` | ⭐⭐⭐⭐⭐ | Full page content extraction |
+| **1 — Primary** | **Tavily** | `TAVILY_API_KEY` | ⭐⭐⭐⭐⭐ | Real-time web and news search, AI-optimised |
+| **1 — Optional** | Brave Search | `BRAVE_SEARCH_API_KEY` | ⭐⭐⭐⭐ | Web and news results |
+| **1 — Optional** | SerpApi | `SERPAPI_KEY` | ⭐⭐⭐⭐ | Google web and news results |
+| **1 — Optional** | Jina Search | `JINA_API_KEY` | ⭐⭐⭐⭐ | Live web search with uncached current/news queries |
+| **1 — Optional** | Firecrawl | `FIRECRAWL_API_KEY` | ⭐⭐⭐⭐⭐ | Web/news search and full-page extraction |
 | 2 — Domain | GNews | `GNEWS_API_KEY` | ⭐⭐⭐⭐ | News articles |
+| 2 — Domain | NewsAPI.org | `NEWS_API_KEY` | ⭐⭐⭐⭐ | Live articles sorted by publication time |
+| 2 — Free | Google News RSS | none | ⭐⭐⭐⭐ | Live news articles with publication times |
 | 2 — Domain | CricAPI | `CRICAPI_KEY` | ⭐⭐⭐⭐ | Live cricket / sports |
 | 2 — Domain | Alpha Vantage | `ALPHA_VANTAGE_API_KEY` | ⭐⭐⭐⭐ | Stock prices |
 | 3 — Free | Wikipedia | none | ⭐⭐⭐⭐ | Encyclopedic / factual |
-| 3 — Free | DuckDuckGo | none | ⭐⭐⭐ | General fallback |
+| 3 — Free | DuckDuckGo | none | ⭐⭐⭐ | Full web results via HTML search, with Instant Answer fallback |
 | 3 — Free | Open-Meteo | none | ⭐⭐⭐⭐⭐ | Weather |
 | 3 — Free | CoinGecko | none | ⭐⭐⭐⭐⭐ | Crypto prices |
 
-**Minimum viable:** No keys needed — DuckDuckGo + Wikipedia + Open-Meteo + CoinGecko always work.
-**Recommended:** `TAVILY_API_KEY` + `FIRECRAWL_API_KEY` for best results.
+**Minimum viable:** No keys needed — Google News RSS and DuckDuckGo provide live news and web-result fallbacks; Wikipedia, Open-Meteo, and CoinGecko remain available for their domains.
+**Recommended:** Configure `TAVILY_API_KEY` for search and optionally `FIRECRAWL_API_KEY` for page extraction. All configured search providers run in parallel with free fallbacks; results are normalized, deduplicated, and retain source URLs/publication dates.
 
 ---
 
@@ -99,10 +104,11 @@ Also extracts:
 
 **File:** `server/tools/search-engine.ts` → `selectSources()`
 
-- Tavily is always first when configured — it handles every query type
-- Firecrawl is added automatically when both `TAVILY_API_KEY` and `FIRECRAWL_API_KEY` are set
-- Domain-specific sources (GNews, CricAPI, etc.) are added based on query type
-- DuckDuckGo is the last-resort fallback when Tavily is not configured
+- All configured general-search sources (You.com, Tavily, Brave, SerpApi, Jina, Firecrawl Search) run in parallel, each with an independent timeout
+- News queries also query GNews and NewsAPI.org when configured, plus Google News RSS without a key
+- Firecrawl enriches leading results when both `TAVILY_API_KEY` and `FIRECRAWL_API_KEY` are set
+- Domain-specific sources (CricAPI, Alpha Vantage, etc.) are added based on query type
+- DuckDuckGo HTML web search runs as a free fallback even when keyed sources are configured; the Instant Answer API is a secondary fallback
 
 ---
 
@@ -142,7 +148,8 @@ This gives the AI **full article text** instead of just snippets — dramaticall
 
 ### 3c — Free fallbacks
 
-- **DuckDuckGo** — instant answer API, no key, limited results
+- **Google News RSS** — live news article headlines, links, snippets, and publication times; no key
+- **DuckDuckGo** — full web results via HTML search, with Instant Answer API fallback; no key
 - **Wikipedia** — search + page summary for factual queries
 - **Open-Meteo** — geocoding + weather API, completely free
 - **CoinGecko** — crypto prices, completely free
@@ -284,15 +291,19 @@ Appends a formatted sources block to the AI answer:
 ```env
 # PRIMARY (recommended)
 TAVILY_API_KEY=          # https://app.tavily.com
+BRAVE_SEARCH_API_KEY=    # https://brave.com/search/api/
+SERPAPI_KEY=             # https://serpapi.com
+JINA_API_KEY=            # https://jina.ai
 FIRECRAWL_API_KEY=       # https://www.firecrawl.dev
 
 # DOMAIN-SPECIFIC (optional)
 GNEWS_API_KEY=           # https://gnews.io
+NEWS_API_KEY=            # https://newsapi.org (Google News RSS remains a no-key fallback)
 CRICAPI_KEY=             # https://cricapi.com
 ALPHA_VANTAGE_API_KEY=   # https://alphavantage.co
 
 # FREE FALLBACKS (no key needed — always active)
-# Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko
+# Google News RSS, Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko
 ```
 
 ---
