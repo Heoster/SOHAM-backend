@@ -352,7 +352,7 @@ buildSohamPromptContext(message, userId)
 
 - `GET /api/health/live` is a cheap, unauthenticated process liveness check.
 - `GET /api/health/ready` returns `200` only when at least one model in the enabled catalog has its provider credentials and feature gates configured; otherwise it returns `503`.
-- `GET /api/health` and `/api/health/services` report system resources, model availability, and integration configuration for Groq, Google, OpenRouter, GNews, Tavily, Firecrawl, You.com, CricAPI, Alpha Vantage, Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko, Supabase, Upstash, image, and browser voice services.
+- `GET /api/health` and `/api/health/services` report system resources, model availability, and integration configuration for Groq, Google, OpenRouter, GNews, NewsAPI.org, Google News RSS, Tavily, Brave, SerpApi, Jina, Firecrawl, You.com, CricAPI, Alpha Vantage, Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko, Supabase, Upstash, image, and browser voice services.
 - `?probe=1` performs authenticated network probes. Send `Authorization: Bearer $SOHAM_API_KEY`. Probes to keyed services such as GNews, Tavily, Firecrawl, CricAPI, and Alpha Vantage may consume provider quota; the normal health endpoint only checks configuration and does not call them.
 
 ## AI Model Providers
@@ -397,9 +397,10 @@ See [SEARCH_SYSTEM.md](./SEARCH_SYSTEM.md) for complete documentation.
 
 **Quick summary:**
 - 6-step pipeline: Analysis → Source Selection → Parallel Fetch → Merge → AI Synthesis → Citations
-- Sources: Brave, SerpAPI, GNews, Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko, CricAPI
-- Works with zero API keys (DuckDuckGo + Wikipedia always available)
-- Best with `BRAVE_SEARCH_API_KEY` configured
+- Sources: Tavily, You.com, Brave, SerpApi, Jina, Firecrawl Search, GNews, Google News RSS, Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko, CricAPI
+- Works with zero API keys (Google News RSS and DuckDuckGo web search are always available)
+- Configured search providers run together; free sources remain active as fallbacks
+- `BRAVE_SEARCH_API_KEY` and `SERPAPI_KEY` are supported when configured
 
 ---
 

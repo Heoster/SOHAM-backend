@@ -202,6 +202,19 @@ async function probeGNews(): Promise<void> {
   if (data.errors?.length) throw new Error('GNews rejected the health query');
 }
 
+async function probeNewsApi(): Promise<void> {
+  const key = process.env.NEWS_API_KEY;
+  if (!key) throw new Error('NEWS_API_KEY not set');
+  const params = new URLSearchParams({ q: 'health check', pageSize: '1', sortBy: 'publishedAt' });
+  const res = await fetch(`https://newsapi.org/v2/everything?${params}`, {
+    headers: { 'X-Api-Key': key },
+    signal: AbortSignal.timeout(4000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { status?: string; message?: string };
+  if (data.status !== 'ok') throw new Error(data.message || 'NewsAPI rejected the health query');
+}
+
 async function probeCricApi(): Promise<void> {
   const key = process.env.CRICAPI_KEY;
   if (!key) throw new Error('CRICAPI_KEY not set');
@@ -338,7 +351,7 @@ const ALL_ENDPOINTS: EndpointHealth[] = [
   { method: 'POST', path: '/api/chat/personality',    category: 'chat',     status: 'registered', description: 'Chat with user personality + memory system' },
   { method: 'POST', path: '/api/chat/stream',         category: 'chat',     status: 'registered', description: 'Server-sent event chat stream; tool turns stream final response after tool loop' },
   // AI Tools
-  { method: 'POST', path: '/api/ai/search',           category: 'ai',       status: 'registered', description: '6-step web search: Tavily + Firecrawl + AI synthesis' },
+  { method: 'POST', path: '/api/ai/search',           category: 'ai',       status: 'registered', description: 'Multi-provider web/news search with citations and AI synthesis' },
   { method: 'POST', path: '/api/ai/solve',            category: 'ai',       status: 'registered', description: 'Math / problem solver with step-by-step solutions' },
   { method: 'POST', path: '/api/ai/summarize',        category: 'ai',       status: 'registered', description: 'Text summarization (brief/detailed/bullets/eli5)' },
   { method: 'POST', path: '/api/ai/image-solver',     category: 'ai',       status: 'registered', description: 'Solve equations from images (visual math)' },
@@ -450,15 +463,35 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       'Primary web search — real-time, AI-optimised results',
       'TAVILY_API_KEY', 'https://app.tavily.com'
     ),
+    brave: envCheck(
+      ['BRAVE_SEARCH_API_KEY'], false,
+      'Brave web and news search — optional configured search source',
+      'BRAVE_SEARCH_API_KEY', 'https://brave.com/search/api/'
+    ),
+    serpapi: envCheck(
+      ['SERPAPI_KEY'], false,
+      'Google web and news results through SerpApi — optional configured source',
+      'SERPAPI_KEY', 'https://serpapi.com'
+    ),
+    jina: envCheck(
+      ['JINA_API_KEY'], false,
+      'Jina live web search with uncached mode for current/news queries',
+      'JINA_API_KEY', 'https://jina.ai'
+    ),
     firecrawl: envCheck(
       ['FIRECRAWL_API_KEY'], false,
-      'Deep content extraction from URLs (full page markdown)',
+      'Firecrawl web/news search and deep content extraction from URLs',
       'FIRECRAWL_API_KEY', 'https://www.firecrawl.dev'
     ),
     gnews: envCheck(
       ['GNEWS_API_KEY'], false,
-      'News articles search',
+      'GNews articles search',
       'GNEWS_API_KEY', 'https://gnews.io'
+    ),
+    newsapi: envCheck(
+      ['NEWS_API_KEY'], false,
+      'NewsAPI.org live article search',
+      'NEWS_API_KEY', 'https://newsapi.org'
     ),
     cricapi: envCheck(
       ['CRICAPI_KEY'], false,
@@ -470,9 +503,14 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       'Stock market prices and financial data',
       'ALPHA_VANTAGE_API_KEY', 'https://alphavantage.co'
     ),
+    googleNewsRss: {
+      status: 'ok', configured: true, required: false,
+      description: 'Google News RSS live article search — no key needed',
+      keyEnvVar: 'none',
+    },
     duckduckgo: {
       status: 'ok', configured: true, required: false,
-      description: 'DuckDuckGo instant answers — free, no key needed',
+      description: 'DuckDuckGo HTML web search with Instant Answer fallback — no key needed',
       keyEnvVar: 'none',
     },
     wikipedia: {
@@ -530,7 +568,7 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       [providers, 'groq', probeGroq], [providers, 'google', probeGoogle],
       [providers, 'openrouter', probeOpenRouter],
       [search, 'you', probeYouCom], [search, 'tavily', probeTavily],
-      [search, 'firecrawl', probeFirecrawl], [search, 'gnews', probeGNews],
+      [search, 'firecrawl', probeFirecrawl], [search, 'gnews', probeGNews], [search, 'newsapi', probeNewsApi],
       [search, 'cricapi', probeCricApi], [search, 'alphaVantage', probeAlphaVantage],
       [search, 'duckduckgo', probeDuckDuckGo], [search, 'wikipedia', probeWikipedia],
       [search, 'openMeteo', probeOpenMeteo], [search, 'coinGecko', probeCoinGecko],

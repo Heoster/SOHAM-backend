@@ -30,6 +30,7 @@ interface ToolIntent {
 
 function sanitizeQuery(query: string): string {
   return query
+    .replace(/\b(?:nvidea|nvdia|nvid[ai]a)\b/gi, 'NVIDIA')
     .replace(/[^\w\s\-.,/]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -116,8 +117,8 @@ export function detectToolIntent(message: string): ToolIntent | null {
   //          "anything new", "world events", "global news", etc.
   if (
     /\b(what('?s| is| has)?\s+(happening|going on|new|occurred|happened))\b/i.test(lower) ||
-    /\b(happened|happening|occurred|going on)\b.{0,40}\b(world|today|recently|last (few )?(hours?|days?|minutes?|weeks?))\b/i.test(lower) ||
-    /\b(last (few )?(hours?|days?|minutes?|weeks?)|past (few )?(hours?|days?|minutes?|weeks?))\b/i.test(lower) ||
+    /\b(happened|happen|happening|occurred|going on|changed?)\b.{0,80}\b(world|today|now|recently|last|past|this week|this month)\b/i.test(lower) ||
+    /\b(?:what|any|anything|updates?)\b.{0,80}\b(?:last|past)\s+(?:the\s+)?(?:some\s+|a few\s+|few\s+|couple of\s+|\d+\s+)?(?:hours?|days?|minutes?|weeks?)\b/i.test(lower) ||
     /\b(recent events?|world events?|global events?|current events?|today'?s? events?)\b/i.test(lower) ||
     /\b(anything (new|happening|interesting)|what'?s? new|catch me up|fill me in|update me)\b/i.test(lower) ||
     /\b(world (news|update|situation|today)|global (news|update|situation))\b/i.test(lower) ||
@@ -234,55 +235,28 @@ async function weatherSearch(query: string): Promise<SohamToolResult> {
 }
 
 async function newsSearch(query: string): Promise<SohamToolResult> {
-  const safeQuery = sanitizeQuery(query) || 'latest technology news';
-  const apiKey = process.env.GNEWS_API_KEY;
-
-  const freeFallback = async (): Promise<SohamToolResult> => {
-    try {
-      const fallback = await searchDuckDuckGo(`latest news ${safeQuery}`);
-      const results = fallback.results.slice(0, 5);
-      return {
-        tool: 'news_search',
-        query: safeQuery,
-        ok: results.length > 0,
-        output: results.length > 0
-          ? results.map((item, i) => `${i + 1}. ${item.title}: ${item.snippet}`).join('\n')
-          : 'No recent news articles found from the free search fallback.',
-        sources: results.map(item => ({ title: item.title, url: item.url })),
-      };
-    } catch (error) {
-      return { tool: 'news_search', query: safeQuery, ok: false, output: `News providers unavailable: ${String(error)}` };
-    }
-  };
-
-  if (!apiKey) return freeFallback();
-
+  const safeQuery = sanitizeQuery(query) || 'latest news';
   try {
-    const data = await fetchJson<{
-      articles?: Array<{ title: string; url: string; description?: string; publishedAt?: string; source?: { name?: string } }>;
-    }>(
-      `https://gnews.io/api/v4/search?q=${encodeURIComponent(safeQuery)}&lang=en&max=5&apikey=${encodeURIComponent(apiKey)}`
-    );
-
-    const articles = data.articles || [];
-    if (articles.length === 0) return freeFallback();
-
-    const output = articles
-      .map((a, i) => `${i + 1}. ${a.title} (${a.source?.name || 'Unknown source'}, ${a.publishedAt || 'N/A'})`)
-      .join('\n');
-
+    // Use the same source fan-out as web search (Tavily/You.com/Jina/Firecrawl/
+    // GNews/Google News RSS/DuckDuckGo), not a separate single-provider path.
+    const { runSearchPipeline } = await import('./search-engine');
+    const result = await runSearchPipeline(safeQuery);
+    const articles = result.results.slice(0, 6);
     return {
       tool: 'news_search',
       query: safeQuery,
-      ok: true,
-      output,
-      sources: articles.map(a => ({ title: a.title, url: a.url })),
+      ok: articles.length > 0,
+      output: articles.length > 0
+        ? articles.map((article, i) =>
+            `${i + 1}. ${article.title}${article.publishedAt ? ` (${article.publishedAt})` : ''}: ${article.snippet}\n   Source: ${article.url}`
+          ).join('\n')
+        : 'No recent news results were returned by the configured search sources.',
+      sources: articles.map(article => ({ title: article.title, url: article.url })),
     };
-  } catch {
-    return freeFallback();
+  } catch (error) {
+    return { tool: 'news_search', query: safeQuery, ok: false, output: `News search failed: ${String(error)}` };
   }
 }
-
 async function sportsSearch(query: string): Promise<SohamToolResult> {
   const safeQuery = sanitizeQuery(query) || 'live cricket matches';
   const cricApiKey = process.env.CRICAPI_KEY;

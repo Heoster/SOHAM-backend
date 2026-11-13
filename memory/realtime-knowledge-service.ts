@@ -3,7 +3,7 @@
  * ════════════════════════════════════════════════════════════════════════════
  * Provides SOHAM with live awareness of:
  *   - Current date, time, day, timezone
- *   - Live news headlines (GNews → Tavily → DuckDuckGo fallback)
+ *   - Live news and web results from the shared multi-provider search engine
  *   - Live weather for detected locations
  *   - Live web search results
  *
@@ -18,6 +18,7 @@
 
 import { randomUUID } from 'crypto';
 import { generateEmbedding } from './enhanced-rag';
+import { runSearchPipeline } from '../tools/search-engine';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -219,143 +220,39 @@ export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<
 // ─── Live news fetch ──────────────────────────────────────────────────────────
 
 async function fetchLiveNews(query: string): Promise<LiveDataResult | null> {
-  const gnewsKey = process.env.GNEWS_API_KEY;
-  const tavilyKey = process.env.TAVILY_API_KEY;
-  const fetchedAt = new Date().toISOString();
-
-  // Try GNews first
-  if (gnewsKey) {
-    try {
-      const res = await fetch(
-        `https://gnews.io/api/v4/search?q=${encodeURIComponent(query)}&lang=en&max=5&apikey=${gnewsKey}`,
-        { signal: AbortSignal.timeout(6000) }
-      );
-      if (res.ok) {
-        const data = await res.json() as any;
-        const articles = data.articles ?? [];
-        if (articles.length > 0) {
-          const content = articles
-            .slice(0, 5)
-            .map((a: any, i: number) => `${i+1}. ${a.title} (${a.source?.name ?? 'Unknown'}, ${a.publishedAt ?? 'N/A'})`)
-            .join('\n');
-          return { type: 'news', query, content, source: 'gnews', fetchedAt, ttlHours: 1 };
-        }
-      }
-    } catch { /* fall through */ }
-  }
-
-  // Try Tavily news topic
-  if (tavilyKey) {
-    try {
-      const res = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: tavilyKey, query, topic: 'news', max_results: 5, include_answer: true }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (res.ok) {
-        const data = await res.json() as any;
-        const results = data.results ?? [];
-        if (results.length > 0) {
-          const content = (data.answer ? `Summary: ${data.answer}\n\n` : '') +
-            results.slice(0, 5).map((r: any, i: number) => `${i+1}. ${r.title} — ${r.content?.slice(0,120)}`).join('\n');
-          return { type: 'news', query, content, source: 'tavily', fetchedAt, ttlHours: 1 };
-        }
-      }
-    } catch { /* fall through */ }
-  }
-
-  // DuckDuckGo fallback
-  try {
-    const res = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query + ' news')}&format=json&no_html=1`,
-      { signal: AbortSignal.timeout(5000) }
-    );
-    if (res.ok) {
-      const data = await res.json() as any;
-      const topics = (data.RelatedTopics ?? []).filter((t: any) => t.Text && t.Text.length > 30).slice(0, 5);
-      if (topics.length > 0) {
-        const content = topics.map((t: any, i: number) => `${i+1}. ${t.Text}`).join('\n');
-        return { type: 'news', query, content, source: 'duckduckgo', fetchedAt, ttlHours: 0.5 };
-      }
-    }
-  } catch { /* ignore */ }
-
-  return null;
+  const result = await runSearchPipeline(query);
+  if (result.results.length === 0) return null;
+  const content = [
+    result.abstract ? `Search summary: ${result.abstract}` : '',
+    ...result.results.slice(0, 5).map((article, index) =>
+      `${index + 1}. ${article.title}${article.publishedAt ? ` (${article.publishedAt})` : ''}` +
+      `${article.snippet ? ` — ${article.snippet}` : ''}${article.url ? `\n   Source: ${article.url}` : ''}`
+    ),
+  ].filter(Boolean).join('\n');
+  return {
+    type: 'news', query, content,
+    source: result.sourcesUsed.join(', ') || 'search-engine',
+    fetchedAt: new Date().toISOString(), ttlHours: 1,
+  };
 }
 
 // ─── Live web search fetch ────────────────────────────────────────────────────
 
 async function fetchLiveWebSearch(query: string): Promise<LiveDataResult | null> {
-  const tavilyKey = process.env.TAVILY_API_KEY;
-  const youKey    = process.env.YOU_API_KEY;
-  const fetchedAt = new Date().toISOString();
-
-  // Try You.com API
-  if (youKey) {
-    try {
-      const res = await fetch(
-        `https://api.ydc-index.io/search?query=${encodeURIComponent(query)}&num_web_results=5`,
-        {
-          headers: { 'X-API-Key': youKey },
-          signal: AbortSignal.timeout(7000),
-        }
-      );
-      if (res.ok) {
-        const data = await res.json() as any;
-        const hits = data.hits ?? [];
-        if (hits.length > 0) {
-          const content = hits.slice(0, 5)
-            .map((h: any, i: number) => `${i+1}. ${h.title} — ${(h.snippets ?? [h.description ?? '']).join(' ').slice(0, 200)}`)
-            .join('\n');
-          return { type: 'web', query, content, source: 'you.com', fetchedAt, ttlHours: 6 };
-        }
-      }
-    } catch { /* fall through */ }
-  }
-
-  // Try Tavily
-  if (tavilyKey) {
-    try {
-      const res = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: tavilyKey, query, search_depth: 'basic', max_results: 5, include_answer: true }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (res.ok) {
-        const data = await res.json() as any;
-        const results = data.results ?? [];
-        if (results.length > 0) {
-          const content = (data.answer ? `Answer: ${data.answer}\n\n` : '') +
-            results.slice(0, 5).map((r: any, i: number) => `${i+1}. ${r.title} — ${r.content?.slice(0, 150)}`).join('\n');
-          return { type: 'web', query, content, source: 'tavily', fetchedAt, ttlHours: 6 };
-        }
-      }
-    } catch { /* fall through */ }
-  }
-
-  // DuckDuckGo fallback
-  try {
-    const res = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`,
-      { signal: AbortSignal.timeout(5000) }
-    );
-    if (res.ok) {
-      const data = await res.json() as any;
-      const abstract = data.Abstract?.trim();
-      const topics = (data.RelatedTopics ?? []).filter((t: any) => t.Text?.length > 30).slice(0, 4);
-      if (abstract || topics.length > 0) {
-        const content = [
-          abstract ? `Summary: ${abstract}` : '',
-          ...topics.map((t: any, i: number) => `${i+1}. ${t.Text}`),
-        ].filter(Boolean).join('\n');
-        return { type: 'web', query, content, source: 'duckduckgo', fetchedAt, ttlHours: 3 };
-      }
-    }
-  } catch { /* ignore */ }
-
-  return null;
+  const result = await runSearchPipeline(query);
+  if (result.results.length === 0) return null;
+  const content = [
+    result.abstract ? `Search summary: ${result.abstract}` : '',
+    ...result.results.slice(0, 5).map((item, index) =>
+      `${index + 1}. ${item.title}${item.snippet ? ` — ${item.snippet}` : ''}` +
+      `${item.url ? `\n   Source: ${item.url}` : ''}`
+    ),
+  ].filter(Boolean).join('\n');
+  return {
+    type: 'web', query, content,
+    source: result.sourcesUsed.join(', ') || 'search-engine',
+    fetchedAt: new Date().toISOString(), ttlHours: 3,
+  };
 }
 
 // ─── Main: get realtime context for a query ───────────────────────────────────
