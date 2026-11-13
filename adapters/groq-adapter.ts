@@ -1,190 +1,203 @@
 /**
  * Groq Provider Adapter
- * Implements API calls to Groq's fast inference API
- * Free tier: 14,400 requests/day with excellent performance
+ * Implements Groq chat completions, built-in tools, and an allowlisted local function loop.
+ * Calls are disabled unless GROQ_FREE_PLAN_ONLY confirms a $0 Free-plan account.
  */
 
-import { BaseProviderAdapter, type GenerateRequest, type GenerateResponse, type MessageData } from './types';
+import { BaseProviderAdapter, type GenerateRequest, type GenerateResponse, type MessageData, type GroqBuiltinTool } from './types';
+import { executeSohamTool } from '../tools/agent-tools';
 import { createUserFriendlyError } from '../routing/model-config';
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
+interface GroqToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
 interface GroqMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: GroqToolCall[];
+  executed_tools?: Array<string | { type?: string; name?: string }>;
 }
 
 interface GroqResponse {
   choices: Array<{
-    message: {
-      content: string;
-    };
+    message: GroqMessage;
     finish_reason: string;
   }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: {
     message: string;
     type: string;
   };
 }
 
+const MAX_LOCAL_TOOL_ROUNDS = 3;
+const GPT_OSS_MODELS = new Set(['openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
+const LOCAL_TOOL_MODELS = new Set([...GPT_OSS_MODELS, 'qwen/qwen3.8-27b']);
+const LOCAL_FUNCTION_TOOLS = [
+  { type: 'function', function: { name: 'search_web', description: 'Search the web for current information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A concise web search query.' } }, required: ['query'], additionalProperties: false } } },
+  { type: 'function', function: { name: 'search_news', description: 'Search recent news articles using the configured news providers, including GNews.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A concise news query.' } }, required: ['query'], additionalProperties: false } } },
+  { type: 'function', function: { name: 'get_weather', description: 'Get current weather or forecast information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A city or weather question.' } }, required: ['query'], additionalProperties: false } } },
+  { type: 'function', function: { name: 'search_sports', description: 'Look up current sports and cricket scores or match information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A team, match, or sports query.' } }, required: ['query'], additionalProperties: false } } },
+  { type: 'function', function: { name: 'search_finance', description: 'Look up financial, stock, or cryptocurrency information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A stock, ticker, crypto, or finance query.' } }, required: ['query'], additionalProperties: false } } },
+] as const;
+
+const LOCAL_TOOL_COMMANDS: Record<string, string> = {
+  search_web: 'search',
+  search_news: 'news',
+  get_weather: 'weather',
+  search_sports: 'sports',
+  search_finance: 'finance',
+};
+
+function builtInToolPayload(tools: GroqBuiltinTool[]): Array<{ type: GroqBuiltinTool }> {
+  return tools.map(type => ({ type }));
+}
+
 interface GroqStreamChunk {
-  choices: Array<{
-    delta: { content?: string };
-    finish_reason: string | null;
+  choices?: Array<{
+    delta?: { content?: string };
+    finish_reason?: string | null;
   }>;
+  error?: { message?: string };
 }
 
 export class GroqAdapter extends BaseProviderAdapter {
   readonly provider = 'groq' as const;
   
   isAvailable(): boolean {
-    return !!process.env.GROQ_API_KEY;
+    return process.env.GROQ_FREE_PLAN_ONLY === 'true' && !!process.env.GROQ_API_KEY;
   }
   
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const { model, prompt, systemPrompt, history, params } = request;
     const mergedParams = this.mergeParams(model, params);
-    
     const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
-      throw createUserFriendlyError(
-        new Error('GROQ_API_KEY not configured'),
-        'groq',
-        model.id
-      );
+    if (process.env.GROQ_FREE_PLAN_ONLY !== 'true') {
+      throw createUserFriendlyError(new Error('Groq inference is disabled unless GROQ_FREE_PLAN_ONLY=true confirms a $0 Free-plan account'), 'groq', model.id);
     }
-    
-    // Build messages array for OpenAI-compatible format
+    if (!apiKey) throw createUserFriendlyError(new Error('GROQ_API_KEY not configured'), 'groq', model.id);
+
+    const builtinTools = request.groqBuiltinTools ?? [];
+    if (builtinTools.length > 0 && !GPT_OSS_MODELS.has(model.modelId)) {
+      throw createUserFriendlyError(new Error('Groq browser_search/code_interpreter built-ins require a GPT-OSS model'), 'groq', model.id);
+    }
+    const localToolsEnabled = request.enableLocalToolCalling === true;
+    if (localToolsEnabled && !LOCAL_TOOL_MODELS.has(model.modelId)) {
+      throw createUserFriendlyError(new Error('Local function calling requires Groq GPT-OSS or Qwen 3.8 27B'), 'groq', model.id);
+    }
+    const tools = [
+      ...builtInToolPayload(builtinTools),
+      ...(localToolsEnabled ? LOCAL_FUNCTION_TOOLS : []),
+    ];
     const messages = this.buildMessages(prompt, systemPrompt, history);
-    
+    const toolsUsed = new Set<string>();
+
     try {
-      // Create AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
-      
-      const response = await fetch(GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: model.modelId,
-          messages,
-          temperature: mergedParams.temperature,
-          top_p: mergedParams.topP,
-          max_tokens: mergedParams.maxOutputTokens,
-          stream: false,
-        }),
-        signal: controller.signal,
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Groq API Error for ${model.id}:`, {
-          status: response.status,
-          statusText: response.statusText,
-          error: errorText,
-        });
-        
-        if (response.status === 401 || response.status === 403) {
-          throw createUserFriendlyError(
-            new Error(`Authentication failed: ${errorText}`),
-            'groq',
-            model.id
-          );
+      for (let round = 0; round <= MAX_LOCAL_TOOL_ROUNDS; round++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        let response: Response;
+        try {
+          response = await fetch(GROQ_API_URL, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: model.modelId,
+              messages,
+              temperature: mergedParams.temperature,
+              top_p: mergedParams.topP,
+              max_completion_tokens: mergedParams.maxOutputTokens,
+              ...(tools.length > 0 && { tools, tool_choice: 'auto' }),
+              stream: false,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
         }
-        
-        if (response.status === 429) {
-          throw createUserFriendlyError(
-            new Error(`Rate limit exceeded: ${errorText}`),
-            'groq',
-            model.id
-          );
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw createUserFriendlyError(new Error(`Groq API error ${response.status}: ${errorText.slice(0, 400)}`), 'groq', model.id);
         }
-        
-        // Critical failures that should trigger immediate fallback
-        if (response.status === 503 || response.status === 502 || response.status === 504) {
-          throw createUserFriendlyError(
-            new Error(`Service Unavailable (${response.status}): ${errorText}`),
-            'groq',
-            model.id
-          );
+        const data = await response.json() as GroqResponse;
+        if (data.error) throw createUserFriendlyError(new Error(data.error.message), 'groq', model.id);
+        const choice = data.choices?.[0];
+        if (!choice?.message) throw createUserFriendlyError(new Error('No response generated'), 'groq', model.id);
+
+        for (const executed of choice.message.executed_tools ?? []) {
+          const name = typeof executed === 'string' ? executed : executed.type ?? executed.name;
+          if (name) toolsUsed.add(name);
         }
-        
-        throw createUserFriendlyError(
-          new Error(`API error: ${response.status} - ${errorText}`),
-          'groq',
-          model.id
-        );
+
+        const calls = choice.message.tool_calls ?? [];
+        if (calls.length > 0) {
+          if (!localToolsEnabled) {
+            throw createUserFriendlyError(new Error('Model requested local functions, but enableLocalToolCalling was not enabled'), 'groq', model.id);
+          }
+          if (round === MAX_LOCAL_TOOL_ROUNDS) {
+            throw createUserFriendlyError(new Error('Groq tool-calling turn limit reached'), 'groq', model.id);
+          }
+          messages.push({ role: 'assistant', content: choice.message.content, tool_calls: calls });
+          const results = await Promise.all(calls.map(async call => {
+            const command = LOCAL_TOOL_COMMANDS[call.function.name];
+            if (!command) throw createUserFriendlyError(new Error(`Tool is not allowed: ${call.function.name}`), 'groq', model.id);
+            let args: unknown;
+            try { args = JSON.parse(call.function.arguments || '{}'); }
+            catch { throw createUserFriendlyError(new Error(`Invalid JSON arguments for ${call.function.name}`), 'groq', model.id); }
+            const query = args && typeof args === 'object' && 'query' in args
+              ? String((args as { query: unknown }).query).trim().slice(0, 240)
+              : '';
+            if (!query) throw createUserFriendlyError(new Error(`A non-empty query is required for ${call.function.name}`), 'groq', model.id);
+            const result = await executeSohamTool(`/${command} ${query}`);
+            toolsUsed.add(call.function.name);
+            const content = result
+              ? JSON.stringify({ ok: result.ok, output: result.output.slice(0, 6000), sources: result.sources ?? [] })
+              : JSON.stringify({ ok: false, output: 'Tool did not return a result.' });
+            return { role: 'tool' as const, tool_call_id: call.id, name: call.function.name, content };
+          }));
+          messages.push(...results);
+          continue;
+        }
+
+        const text = choice.message.content?.trim();
+        if (!text) throw createUserFriendlyError(new Error('No response generated'), 'groq', model.id);
+        return {
+          text,
+          modelUsed: model.id,
+          ...(data.usage && { usage: { promptTokens: data.usage.prompt_tokens ?? 0, completionTokens: data.usage.completion_tokens ?? 0 } }),
+          ...(toolsUsed.size > 0 && { toolsUsed: [...toolsUsed] }),
+        };
       }
-      
-      const data = await response.json() as GroqResponse;
-      
-      if (data.error) {
-        console.error(`Groq Model Error for ${model.id}:`, data.error.message);
-        throw createUserFriendlyError(
-          new Error(data.error.message),
-          'groq',
-          model.id
-        );
-      }
-      
-      const choice = data.choices?.[0];
-      if (!choice || !choice.message?.content) {
-        throw createUserFriendlyError(
-          new Error('No response generated'),
-          'groq',
-          model.id
-        );
-      }
-      
-      const generatedText = choice.message.content;
-      
-      return this.createResponse(generatedText, model.id);
+      throw createUserFriendlyError(new Error('Groq tool-calling loop ended without a final response'), 'groq', model.id);
     } catch (error) {
-      if (error instanceof Error && error.name === 'AIServiceError') {
-        throw error;
-      }
-      
-      // Handle AbortController timeout
+      if (error instanceof Error && error.name === 'AIServiceError') throw error;
       if (error instanceof Error && error.name === 'AbortError') {
-        console.error(`Groq request timeout for ${model.id}`);
-        throw createUserFriendlyError(
-          new Error('Request timeout - the AI service took too long to respond'),
-          'groq',
-          model.id
-        );
+        throw createUserFriendlyError(new Error('Groq request timed out'), 'groq', model.id);
       }
-      
-      // Handle fetch failed errors (network issues, missing API key in production, etc.)
-      if (error instanceof Error && error.message.includes('fetch failed')) {
-        console.error(`Groq fetch failed for ${model.id}:`, error.message);
-        throw createUserFriendlyError(
-          new Error('Network error - unable to connect to AI service. Please check your API key configuration.'),
-          'groq',
-          model.id
-        );
-      }
-      
-      // Log the actual error for debugging
-      console.error(`Groq Adapter Error for ${model.id}:`, error);
-      
-      // Check if this is a critical failure that should trigger smart fallback
-      if (this.isCriticalFailure(error)) {
-        console.warn(`Critical Groq failure for ${model.id}, will trigger smart fallback`);
-      }
-      
       throw createUserFriendlyError(error, 'groq', model.id);
     }
   }
-  
+
   /**
    * Stream tokens from Groq using SSE (OpenAI-compatible stream=true)
    */
   async *generateStream(request: GenerateRequest): AsyncGenerator<string, void, unknown> {
+    if (request.enableLocalToolCalling || request.groqBuiltinTools?.length) {
+      const response = await this.generate(request);
+      yield response.text;
+      return;
+    }
+    if (process.env.GROQ_FREE_PLAN_ONLY !== 'true') {
+      throw createUserFriendlyError(new Error('Groq inference is disabled unless GROQ_FREE_PLAN_ONLY=true confirms a $0 Free-plan account'), 'groq', request.model.id);
+    }
     const { model, prompt, systemPrompt, history, params } = request;
     const mergedParams = this.mergeParams(model, params);
 
@@ -207,7 +220,7 @@ export class GroqAdapter extends BaseProviderAdapter {
         messages,
         temperature: mergedParams.temperature,
         top_p: mergedParams.topP,
-        max_tokens: mergedParams.maxOutputTokens,
+        max_completion_tokens: mergedParams.maxOutputTokens,
         stream: true,
       }),
       signal: controller.signal,
@@ -238,13 +251,17 @@ export class GroqAdapter extends BaseProviderAdapter {
           if (!trimmed.startsWith('data: ')) continue;
           const data = trimmed.slice(6);
           if (data === '[DONE]') return;
+          let chunk: GroqStreamChunk;
           try {
-            const chunk = JSON.parse(data) as GroqStreamChunk;
-            const token = chunk.choices?.[0]?.delta?.content;
-            if (token) yield token;
+            chunk = JSON.parse(data) as GroqStreamChunk;
           } catch {
-            // malformed chunk — skip
+            continue;
           }
+          if (chunk.error?.message) {
+            throw createUserFriendlyError(new Error(chunk.error.message), 'groq', model.id);
+          }
+          const token = chunk.choices?.[0]?.delta?.content;
+          if (token) yield token;
         }
       }
     } finally {

@@ -66,7 +66,7 @@ function getClientKey(req: Request, path: string): string {
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 export function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (req.path === '/health' || req.path === '/health/') {
+  if (req.path === '/health' || req.path === '/health/' || req.path.startsWith('/health/')) {
     next();
     return;
   }

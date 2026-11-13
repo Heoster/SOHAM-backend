@@ -1,49 +1,28 @@
-/**
- * Provider Adapters Index
- * ────────────────────────
- * Exports all AI provider adapters and the getAdapter() factory.
- *
- * Providers:
- *   groq        → Groq Cloud (primary — fastest)
- *   cerebras    → Cerebras Cloud (fast fallback)
- *   google      → Google Gemini (reliable fallback)
- *   huggingface → HuggingFace Router (free fallback)
- *   openrouter  → OpenRouter (multi-model gateway)
- */
-
+/** Registry and factory for the supported text-generation providers. */
 export * from './types';
 export { GroqAdapter, getGroqAdapter } from './groq-adapter';
-export { HuggingFaceAdapter, getHuggingFaceAdapter } from './huggingface-adapter';
 export { GoogleAdapter, getGoogleAdapter } from './google-adapter';
-export { CerebrasAdapter, getCerebrasAdapter } from './cerebras-adapter';
 export { OpenRouterAdapter, getOpenRouterAdapter } from './openrouter-adapter';
+export { CloudflareAdapter, getCloudflareAdapter } from './cloudflare-adapter';
 
 import type { ProviderAdapter } from './types';
 import type { ProviderType } from '../routing/model-config';
 import { getGroqAdapter } from './groq-adapter';
-import { getHuggingFaceAdapter } from './huggingface-adapter';
 import { getGoogleAdapter } from './google-adapter';
-import { getCerebrasAdapter } from './cerebras-adapter';
 import { getOpenRouterAdapter } from './openrouter-adapter';
+import { getCloudflareAdapter } from './cloudflare-adapter';
 
 export function getAdapter(providerType: ProviderType): ProviderAdapter {
   switch (providerType) {
-    case 'groq':       return getGroqAdapter();
-    case 'huggingface': return getHuggingFaceAdapter();
-    case 'google':     return getGoogleAdapter();
-    case 'cerebras':   return getCerebrasAdapter();
+    case 'groq': return getGroqAdapter();
+    case 'google': return getGoogleAdapter();
     case 'openrouter': return getOpenRouterAdapter();
-    default:
-      throw new Error(`Unknown provider type: ${providerType}`);
+    case 'cloudflare': return getCloudflareAdapter();
+    default: throw new Error(`Unsupported chat provider: ${providerType}`);
   }
 }
 
 export function hasAnyProviderAvailable(): boolean {
-  return (
-    getGroqAdapter().isAvailable() ||
-    getHuggingFaceAdapter().isAvailable() ||
-    getGoogleAdapter().isAvailable() ||
-    getCerebrasAdapter().isAvailable() ||
-    getOpenRouterAdapter().isAvailable()
-  );
+  return [getGroqAdapter(), getGoogleAdapter(), getOpenRouterAdapter(), getCloudflareAdapter()]
+    .some(adapter => adapter.isAvailable());
 }

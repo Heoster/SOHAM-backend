@@ -1,7 +1,7 @@
 /**
  * POST /api/image/generate
  * Image generation with rate limiting (10/day per user).
- * Fallback chain: Cloudflare Workers AI -> Pollinations.ai -> HuggingFace FLUX
+ * Fallback chain: Cloudflare Workers AI -> Pollinations.ai
  * Body: { prompt: string, userId: string, style?: "realistic"|"artistic"|"anime"|"sketch" }
  * Response: { success, url, enhancedPrompt, provider, model, generationTime, rateLimitInfo }
  */

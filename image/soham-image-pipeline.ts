@@ -26,7 +26,7 @@ export interface SOHAMImageResult {
   url: string;
   path: string;
   enhancedPrompt: string;
-  provider: 'cloudflare' | 'pollinations' | 'huggingface';
+  provider: 'cloudflare' | 'pollinations';
   model: string;
   generationTime: number;
 }
@@ -103,45 +103,6 @@ export class SOHAMImagePipeline {
     }
   }
 
-  // ─── PROVIDER 3: HF Router / FLUX.1-schnell (needs HF key) ────────────────────
-
-  private async tryHuggingFace(prompt: string): Promise<{ url: string; model: string }> {
-    const hfKey = process.env.HUGGINGFACE_API_KEY;
-    if (!hfKey) throw new Error('HUGGINGFACE_API_KEY not set');
-
-    const response = await fetch(
-      'https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${hfKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ inputs: prompt }),
-        signal: AbortSignal.timeout(60_000),
-      }
-    );
-
-    if (!response.ok) {
-      const err = await response.text().catch(() => response.statusText);
-      throw new Error(`HF FLUX.1-schnell ${response.status}: ${err.substring(0, 100)}`);
-    }
-
-    const contentType = response.headers.get('content-type') ?? '';
-    if (!contentType.includes('image')) {
-      const body = await response.text();
-      throw new Error(`HF returned non-image: ${body.substring(0, 100)}`);
-    }
-
-    // Convert blob to base64 data URL (works on Vercel serverless — no filesystem needed)
-    const arrayBuffer = await response.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
-    const mimeType = contentType.split(';')[0].trim();
-    const dataUrl = `data:${mimeType};base64,${base64}`;
-
-    return { url: dataUrl, model: 'FLUX.1-schnell' };
-  }
-
   // ─── MAIN ────────────────────────────────────────────────────────────────────
 
   async generate(request: SOHAMImageRequest): Promise<SOHAMImageResult> {
@@ -151,11 +112,11 @@ export class SOHAMImagePipeline {
     const aspectRatio = request.aspectRatio ?? engineeredAspectRatio;
 
     let dataUrl: string | null = null;
-    let provider: 'cloudflare' | 'pollinations' | 'huggingface' = 'pollinations';
+    let provider: 'cloudflare' | 'pollinations' = 'pollinations';
     let model = 'flux';
 
     // 1. Cloudflare Workers AI (primary — fast, high quality)
-    if (process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN) {
+    if (process.env.ENABLE_CLOUDFLARE_IMAGE_AI === 'true' && process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN) {
       try {
         const result = await this.tryCloudflare(enhancedPrompt, aspectRatio);
         dataUrl = result.url;
@@ -175,18 +136,6 @@ export class SOHAMImagePipeline {
         model = result.model;
       } catch (err) {
         console.warn('[Image] Pollinations failed:', err instanceof Error ? err.message : err);
-      }
-    }
-
-    // 3. HuggingFace FLUX.1-schnell
-    if (!dataUrl) {
-      try {
-        const result = await this.tryHuggingFace(enhancedPrompt);
-        dataUrl = result.url;
-        provider = 'huggingface';
-        model = result.model;
-      } catch (err) {
-        console.warn('[Image] HF FLUX.1-schnell failed:', err instanceof Error ? err.message : err);
       }
     }
 

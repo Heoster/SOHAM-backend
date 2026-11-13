@@ -17,6 +17,7 @@ import { getIntentDetector } from '../core/intent-detector';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
+import { parseGroqToolOptions } from '../routing/groq-tool-options';
 
 export async function chatHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
@@ -35,6 +36,12 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     }
     if (message.length > 10000) {
       res.status(400).json({ error: 'MESSAGE_TOO_LONG', message: 'Message exceeds 10,000 characters', maxLength: 10000 });
+      return;
+    }
+    let groqToolOptions;
+    try { groqToolOptions = parseGroqToolOptions(settings); }
+    catch (error) {
+      res.status(400).json({ error: 'INVALID_GROQ_TOOL_OPTIONS', message: error instanceof Error ? error.message : 'Invalid Groq tool options' });
       return;
     }
 
@@ -107,6 +114,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       modelChain,
       category: routingCategory,
       params: generationParams,
+      ...groqToolOptions,
     });
 
     // ── Non-blocking post-processing ────────────────────────────────────────
@@ -114,7 +122,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       userId,
       userMessage: message,
       assistantMessage: result.response.text,
-      metadata: { toolsUsed: agentContext.toolsUsed.map((t: any) => t.tool), modelUsed: result.modelUsed },
+      metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed },
     }).catch(() => {});
     extractLongTermMemoriesAsync(userId, message, result.response.text);
     triggerAutoLearnAsync({
@@ -130,7 +138,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       content: result.response.text,
       modelUsed: result.modelUsed,
       autoRouted: result.fallbackTriggered,
-      toolsUsed: agentContext.toolsUsed,
+      toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' }))],
       currentDateTime: agentContext.currentDateTime,
       responseTime: `${Date.now() - startTime}ms`,
       timestamp: new Date().toISOString(),

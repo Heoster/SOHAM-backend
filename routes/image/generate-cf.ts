@@ -17,8 +17,8 @@ const DEFAULT_MODEL = "@cf/black-forest-labs/flux-1-schnell";
 
 export async function generateImageCFHandler(req: Request, res: Response): Promise<void> {
   try {
-    if (!process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_AI_API_TOKEN) {
-      res.status(503).json({ success: false, error: "Cloudflare AI is not configured on this server." });
+    if (process.env.ENABLE_CLOUDFLARE_IMAGE_AI !== 'true' || !process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_AI_API_TOKEN) {
+      res.status(503).json({ success: false, error: "Cloudflare image AI is disabled; enabling it is an explicit opt-in to Workers AI usage." });
       return;
     }
     const { prompt, aspect_ratio = "1:1", num_steps = 4, model } = req.body;
@@ -36,7 +36,7 @@ export async function generateImageCFHandler(req: Request, res: Response): Promi
 
 export function generateImageCFHealthHandler(_req: Request, res: Response): void {
   res.json({
-    available: !!(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN),
+    available: process.env.ENABLE_CLOUDFLARE_IMAGE_AI === 'true' && !!(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN),
     provider: "cloudflare-workers-ai",
     defaultModel: DEFAULT_MODEL,
     supportedModels: [...ALLOWED_MODELS],

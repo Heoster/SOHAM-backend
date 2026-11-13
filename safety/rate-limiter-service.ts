@@ -19,8 +19,8 @@
  * Provider Limits:
  * - Groq: 30 requests per minute, 14,400 requests per day
  * - Google: 15 requests per minute, 1,500 requests per day
- * - Cerebras: 100 requests per minute, 50,000 requests per day
- * - Veo 3.1: 5 requests per minute, 100 requests per day
+ * - OpenRouter and Cloudflare: conservative per-provider request limits
+ * - ElevenLabs: conservative speech-generation limit
  * 
  * Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 14.1-14.9
  */
@@ -159,17 +159,8 @@ export class RateLimiterService {
       requestsPerDay: 1500,
     });
 
-    // Cerebras: 100 RPM, 50,000 RPD (Requirements 14.5, 14.6)
-    this.providerLimits.set('cerebras', {
-      requestsPerMinute: 100,
-      requestsPerDay: 50000,
-    });
-
-    // Hugging Face: Conservative limits (not specified in requirements)
-    this.providerLimits.set('huggingface', {
-      requestsPerMinute: 60,
-      requestsPerDay: 10000,
-    });
+    this.providerLimits.set('openrouter', { requestsPerMinute: 20, requestsPerDay: 200 });
+    this.providerLimits.set('cloudflare', { requestsPerMinute: 60, requestsPerDay: 10000 });
 
     // ElevenLabs: Conservative limits (not specified in requirements)
     this.providerLimits.set('elevenlabs', {
@@ -183,7 +174,7 @@ export class RateLimiterService {
    */
   private initializeProviderStates(): void {
     const now = new Date();
-    const providers: ProviderType[] = ['groq', 'google', 'cerebras', 'huggingface', 'elevenlabs'];
+    const providers: ProviderType[] = ['groq', 'google', 'openrouter', 'cloudflare', 'elevenlabs'];
 
     for (const provider of providers) {
       this.providerStates.set(provider, {
@@ -214,7 +205,7 @@ export class RateLimiterService {
    * Start automatic reset timers for all providers
    */
   private startResetTimers(): void {
-    const providers: ProviderType[] = ['groq', 'google', 'cerebras', 'huggingface', 'elevenlabs'];
+    const providers: ProviderType[] = ['groq', 'google', 'openrouter', 'cloudflare', 'elevenlabs'];
 
     for (const provider of providers) {
       // Reset minute counters every minute
@@ -559,7 +550,7 @@ export class RateLimiterService {
       await this.processQueueForProvider(provider);
     } else {
       // Process all providers
-      const providers: ProviderType[] = ['groq', 'google', 'cerebras', 'huggingface', 'elevenlabs'];
+      const providers: ProviderType[] = ['groq', 'google', 'openrouter', 'cloudflare', 'elevenlabs'];
       for (const p of providers) {
         await this.processQueueForProvider(p);
       }
@@ -648,7 +639,7 @@ export class RateLimiterService {
    * Requirement 6.9, 6.10, 17.9, 17.10
    */
   generateStatisticsReport(): ProviderStatisticsReport {
-    const providers: ProviderType[] = ['groq', 'google', 'cerebras', 'huggingface', 'elevenlabs'];
+    const providers: ProviderType[] = ['groq', 'google', 'openrouter', 'cloudflare', 'elevenlabs'];
     const providerStats: ProviderRateLimitStats[] = [];
     const alerts: Array<{ provider: ProviderType; utilizationRate: number; message: string }> = [];
     

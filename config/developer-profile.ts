@@ -71,7 +71,7 @@ export const DEVELOPER_PROFILE = {
   ],
   aiTechnologies: [
     'Groq API Integration',
-    'Hugging Face Models',
+    'Open-source AI Models',
     'Google Gemini',
     'ElevenLabs Voice Synthesis',
     'OpenAI GPT Models',
@@ -127,7 +127,7 @@ export const DEVELOPER_PROFILE = {
       role: "Founder & Lead Developer",
       company: "CODEEX-AI",
       duration: "2024 – Present",
-      description: "Founded and built SOHAM, a full-stack AI platform integrating 26+ models from providers like Groq, Google Gemini, Hugging Face, and OpenAI. Designed the multi-provider architecture, intelligent routing system, and developer API from scratch."
+      description: "Founded and built SOHAM, a full-stack AI platform with a resilient multi-provider architecture for Groq, Google Gemini, Cloudflare Workers AI, and OpenRouter. Designed intent-aware model routing, streaming fallback, and the developer API."
     },
     {
       role: "Full-Stack Developer",
@@ -164,7 +164,7 @@ export const DEVELOPER_PROFILE = {
     {
       year: "2024 Q2",
       milestone: "Launched Multi-Model Integration",
-      description: "Integrated 26+ AI models from Groq, Hugging Face, Google Gemini, and OpenAI using a custom multi-provider adapter system."
+      description: "Built a custom AI adapter and fallback system integrating Groq, Google Gemini, Cloudflare Workers AI, and OpenRouter."
     },
     {
       year: "2024 Q3",

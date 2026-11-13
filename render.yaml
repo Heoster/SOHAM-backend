@@ -19,13 +19,11 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: GROQ_FREE_PLAN_ONLY
+        value: false
       - key: GOOGLE_API_KEY
         sync: false
       - key: GOOGLE_AI_API_KEY
-        sync: false
-      - key: CEREBRAS_API_KEY
-        sync: false
-      - key: HUGGINGFACE_API_KEY
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
@@ -44,6 +42,8 @@ services:
       - key: UPSTASH_VECTOR_REST_URL
         sync: false
       - key: UPSTASH_VECTOR_REST_TOKEN
+        sync: false
+      - key: YOU_API_KEY
         sync: false
       - key: TAVILY_API_KEY
         sync: false

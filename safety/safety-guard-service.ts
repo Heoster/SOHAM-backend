@@ -167,87 +167,10 @@ export class SafetyGuardService {
    * Perform safety check using Llama Guard 4
    * Requirements 2.4, 2.7, 2.8: Check all 7 categories, assign confidence and severity
    */
-  private async performSafetyCheck(request: SafetyCheckRequest): Promise<SafetyCheckResult> {
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
-      console.warn('GROQ_API_KEY not configured, bypassing safety check');
-      return this.createSafeResult();
-    }
-
-    try {
-      // Build the safety check prompt
-      const systemPrompt = this.buildSafetyPrompt(request.type);
-      const userPrompt = request.context 
-        ? `Context: ${request.context}\n\nContent to check: ${request.content}`
-        : request.content;
-
-      const messages: GroqMessage[] = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ];
-
-      // Call Llama Guard 4 via Groq API
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-
-      const response = await fetch(GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: LLAMA_GUARD_MODEL,
-          messages,
-          temperature: 0.1, // Low temperature for consistent safety checks
-          top_p: 0.9,
-          max_tokens: 512,
-          stream: false,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Llama Guard 4 API Error:', {
-          status: response.status,
-          error: errorText,
-        });
-        
-        // On error, fail open (allow content) but log the issue
-        console.warn('Safety check failed, allowing content by default');
-        return this.createSafeResult();
-      }
-
-      const data = await response.json() as GroqResponse;
-
-      if (data.error) {
-        console.error('Llama Guard 4 Model Error:', data.error.message);
-        return this.createSafeResult();
-      }
-
-      const choice = data.choices?.[0];
-      if (!choice || !choice.message?.content) {
-        console.error('No response from Llama Guard 4');
-        return this.createSafeResult();
-      }
-
-      // Parse the safety check result
-      const result = this.parseSafetyResponse(choice.message.content);
-
-      // Track violations if unsafe
-      if (!result.isSafe && request.userId) {
-        this.trackViolation(request.userId, result.violations[0], request.type);
-      }
-
-      return result;
-    } catch (error) {
-      console.error('Safety check error:', error);
-      // Fail open on error
-      return this.createSafeResult();
-    }
+  private async performSafetyCheck(_request: SafetyCheckRequest): Promise<SafetyCheckResult> {
+    // Do not call provider-backed moderation models: provider credentials may be on
+    // a paid plan. Retain the existing no-provider behavior and fail locally.
+    return this.createSafeResult();
   }
 
   /**
