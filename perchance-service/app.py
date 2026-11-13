@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Body, FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, ConfigDict, Field
 from perchance import ImageGenerator
+from perchance.errors import AuthenticationError
 
 SERVICE_NAME = "soham-perchance"
 SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
@@ -35,15 +36,112 @@ logger = logging.getLogger(SERVICE_NAME)
 app = FastAPI(
     title="Standalone Perchance Image API",
     description=(
-        "Independent HTTP service for Perchance image generation. "
-        "POST /perchance generates an image; GET /healthz, /health/ready, "
-        "and /api/test expose service diagnostics."
+        "Independent Perchance service. GET /studio uses the documented browser API; "
+        "server-side POST routes are best-effort because Perchance may require interactive verification. "
+        "GET /healthz and /health/ready expose service health."
     ),
     version=SERVICE_VERSION,
 )
 _generation_lock = asyncio.Semaphore(1)
 _runtime_probe_lock = asyncio.Lock()
 _runtime_probe_cache: tuple[float, dict[str, object]] | None = None
+
+STUDIO_HTML = r'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perchance Image Studio</title>
+<style>
+  :root{font-family:system-ui,sans-serif;color:#172033;background:#f3f5fb}
+  body{max-width:760px;margin:36px auto;padding:0 16px}
+  main{background:#fff;padding:24px;border-radius:16px;box-shadow:0 8px 32px #17243a18}
+  label{display:block;margin-top:16px;font-weight:650}
+  textarea,select,input,button{box-sizing:border-box;width:100%;font:inherit;padding:11px;margin-top:6px;border:1px solid #cbd2df;border-radius:8px}
+  button{margin-top:20px;background:#5b4bdb;color:white;border:0;font-weight:700;cursor:pointer}
+  button:disabled{opacity:.55;cursor:wait}
+  #status{min-height:24px;color:#475569;margin-top:14px}
+  img{display:block;max-width:100%;max-height:75vh;margin:20px auto;border-radius:12px}
+  .muted{color:#657187;font-size:.92rem}.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+</style>
+</head>
+<body><main>
+<h1>Perchance Image Studio</h1>
+<p class="muted">Generates in your browser through Perchance's documented Image API. No service token is used or sent to the browser.</p>
+<label for="prompt">Prompt</label>
+<textarea id="prompt" rows="4" maxlength="1500">A small blue bird perched on a pine branch at sunrise, detailed illustration</textarea>
+<div class="row">
+  <div><label for="resolution">Resolution</label><select id="resolution"><option>768x768</option><option>512x512</option><option>512x768</option><option>768x512</option></select></div>
+  <div><label for="seed">Seed (optional)</label><input id="seed" type="number" placeholder="random"></div>
+</div>
+<button id="generate">Generate with Perchance</button>
+<div id="status" role="status" aria-live="polite">Ready.</div>
+<img id="result" alt="Generated image" hidden>
+<a id="open" target="_blank" rel="noopener noreferrer" hidden>Open original image</a>
+<p class="muted">The first request warms up Perchance. Generation may take up to 3 minutes. If Perchance blocks the request, this page reports the error; it does not attempt to bypass that protection.</p>
+</main>
+<script>
+const ORIGIN='https://perchance.org';
+let warmed=false, warmPromise;
+function warmUp(){
+  if(warmed)return Promise.resolve(true);
+  if(warmPromise)return warmPromise;
+  warmPromise=new Promise(resolve=>{
+    const frame=document.createElement('iframe');
+    frame.title='Perchance warm-up';frame.setAttribute('aria-hidden','true');frame.tabIndex=-1;
+    frame.style.cssText='width:1px;height:1px;border:0;position:absolute;opacity:0';
+    frame.src=ORIGIN;
+    let done=false;
+    const finish=ok=>{if(done)return;done=true;clearTimeout(timer);frame.remove();warmed=ok;if(!ok)warmPromise=null;resolve(ok)};
+    const timer=setTimeout(()=>finish(false),15000);
+    frame.onload=()=>setTimeout(()=>finish(true),500);
+    frame.onerror=()=>finish(false);
+    document.body.appendChild(frame);
+  });
+  return warmPromise;
+}
+function generateImage(prompt,resolution,seed){
+  return new Promise((resolve,reject)=>{
+    const id=crypto.randomUUID();
+    const params=new URLSearchParams({prompt,format:'json',id,resolution});
+    if(seed!=='')params.set('seed',seed);
+    const frame=document.createElement('iframe');
+    frame.title='Perchance image request';frame.setAttribute('aria-hidden','true');frame.tabIndex=-1;
+    frame.style.cssText='width:1px;height:1px;border:0;position:absolute;opacity:0';
+    frame.src=ORIGIN+'/perchance-ai-api?'+params.toString();
+    let settled=false;
+    const cleanup=()=>{window.removeEventListener('message',onMessage);clearTimeout(timer);frame.remove()};
+    const finish=(error,result)=>{if(settled)return;settled=true;cleanup();if(error)reject(error);else resolve(result)};
+    const onMessage=event=>{
+      if(event.origin!==ORIGIN||event.source!==frame.contentWindow)return;
+      const data=event.data||{},result=data.result;
+      if(data.api!=='perchance-image-api'||!result||result.id!==id)return;
+      if(!result.ok||!result.url){finish(new Error(result.error||'Perchance image generation failed'));return}
+      try{const url=new URL(result.url);if(url.protocol!=='https:')throw new Error('Perchance returned a non-HTTPS URL');finish(null,result)}
+      catch(error){finish(error)}
+    };
+    window.addEventListener('message',onMessage);
+    const timer=setTimeout(()=>finish(new Error('Perchance image generation timed out after 180 seconds')),180000);
+    document.body.appendChild(frame);
+  });
+}
+const button=document.querySelector('#generate'),status=document.querySelector('#status'),image=document.querySelector('#result'),link=document.querySelector('#open');
+button.addEventListener('click',async()=>{
+  const prompt=document.querySelector('#prompt').value.trim();
+  if(!prompt){status.textContent='Enter a prompt first.';return}
+  button.disabled=true;image.hidden=true;link.hidden=true;
+  status.textContent='Warming up Perchance…';
+  try{
+    await warmUp();
+    status.textContent='Generating in the browser… this can take up to 3 minutes.';
+    const result=await generateImage(prompt,document.querySelector('#resolution').value,document.querySelector('#seed').value.trim());
+    image.src=result.url;image.hidden=false;link.href=result.url;link.hidden=false;
+    status.textContent='Generated by Perchance. Seed: '+(result.seed??'not returned');
+  }catch(error){status.textContent='Perchance generation failed: '+(error instanceof Error?error.message:String(error))}
+  finally{button.disabled=false}
+});
+</script>
+</body></html>'''
 
 
 class PerchanceRequest(BaseModel):
@@ -108,6 +206,7 @@ async def root() -> dict[str, object]:
         "description": "Standalone Perchance image-generation service",
         "endpoints": {
             "health": "GET /healthz",
+            "studio": "GET /studio (official browser-based generation)",
             "liveness": "GET /health/live",
             "readiness": "GET /health/ready or GET /api/health",
             "diagnostics": "GET /api/test",
@@ -117,7 +216,10 @@ async def root() -> dict[str, object]:
             "swaggerUi": "GET /docs",
             "redoc": "GET /redoc",
         },
-        "authentication": "X-Perchance-Service-Token is required for generation routes",
+        "authentication": {
+            "serverRoutes": "X-Perchance-Service-Token is required for POST /perchance and POST /api/test/generate",
+            "browserStudio": "GET /studio does not expose or require the service token",
+        },
         "generation": {
             "timeoutSeconds": GENERATION_TIMEOUT_SECONDS,
             "maxConcurrentRequests": 1,
@@ -127,11 +229,18 @@ async def root() -> dict[str, object]:
     }
 
 
+@app.get("/studio", response_class=HTMLResponse)
+async def studio() -> HTMLResponse:
+    """Official browser-based Perchance generation; no backend service token is exposed."""
+    return HTMLResponse(content=STUDIO_HTML)
+
+
 @app.get("/perchance")
 async def generation_route_info() -> dict[str, object]:
     return {
         "route": "POST /perchance",
-        "description": "Generate an image; response body is the image binary.",
+        "description": "Attempt server-side generation; Perchance may require its official browser verification. Use GET /studio for the supported browser-based path.",
+        "browserStudio": "/studio",
         "authHeader": "X-Perchance-Service-Token",
         "requestExample": {
             "prompt": "A fox under a pine tree in snowfall",
@@ -202,7 +311,8 @@ async def diagnostics() -> dict[str, object]:
             "method": "POST",
             "path": "/api/test/generate",
             "requiresAuth": True,
-            "note": "Actually generates an image and uses service resources.",
+            "note": "Attempts server-side generation; Perchance may require a browser session.",
+            "browserAlternative": "/studio",
             "defaultPrompt": DEFAULT_TEST_PROMPT,
         },
     }
@@ -257,6 +367,19 @@ async def _generate_image(body: PerchanceRequest, supplied_token: str | None, li
         raise HTTPException(status_code=504, detail="Perchance image generation timed out") from exc
     except HTTPException:
         raise
+    except AuthenticationError:
+        logger.warning(
+            "Perchance did not provide a server-side user key; use the documented browser studio at /studio"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "PERCHANCE_BROWSER_VERIFICATION_REQUIRED",
+                "message": "Perchance did not authorize server-side generation. No image was generated.",
+                "supportedAlternative": "/studio",
+                "note": "Use the official browser flow or request an authorized server API from Perchance.",
+            },
+        ) from None
     except Exception as exc:  # Do not expose upstream internals/secrets to clients.
         logger.exception("Perchance image generation failed")
         raise HTTPException(status_code=502, detail="Perchance image generation failed") from exc
