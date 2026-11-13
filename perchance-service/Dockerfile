@@ -9,9 +9,10 @@ WORKDIR /app
 
 # The upstream package is installed from its reviewed GitHub commit; Playwright
 # then downloads the matching Chromium build plus its Debian runtime libraries.
+# libatomic1 is needed by Playwright's bundled Node driver on slim Debian images.
 COPY requirements.txt ./requirements.txt
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates libatomic1 \
     && pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install --with-deps chromium \
     && apt-get purge -y --auto-remove git \
