@@ -1,6 +1,6 @@
 # Standalone Perchance Image Service
 
-This Docker app runs independently of SOHAM's Node backend. It can be deployed as its own Render Web Service and called directly at its own Render URL. It uses the pinned unofficial `eeemoon/perchance` Python package with Playwright/Chromium. The upstream implementation can break when Perchance changes its internals.
+This Docker app runs independently of SOHAM's Node backend and can be deployed at its own Render URL. For reliable supported generation, open `/studio`: it uses Perchance's documented browser API from the user's browser and does not expose a service token. The server-side Python package route is best-effort and can fail when Perchance requires interactive verification; it relies on upstream internals and may break when Perchance changes them.
 
 ## Base URL and health checks
 
@@ -9,6 +9,7 @@ For a Render URL such as `https://your-perchance-service.onrender.com`:
 | Method and path | Purpose | Calls Perchance? |
 | --- | --- | --- |
 | `GET /` | Service overview and route discovery | No |
+| `GET /studio` | Official browser-based generation UI (recommended) | Yes, when the user clicks Generate |
 | `GET /healthz` | Fast liveness check; recommended Render health-check path | No |
 | `GET /health/live` | Liveness alias | No |
 | `GET /health/ready` | Detailed readiness; checks token configuration and local Playwright/Chromium installation | No |
@@ -20,7 +21,7 @@ For a Render URL such as `https://your-perchance-service.onrender.com`:
 | `GET /docs` | Swagger UI | No |
 | `GET /openapi.json` | OpenAPI document | No |
 
-`/healthz` only says the HTTP process is alive. `/health/ready` and `/api/health` additionally check that the service token is set and that Playwright can start and its Chromium binary exists. They do not make an upstream Perchance request. The `/api/test/generate` route performs a real generation and may take up to four minutes; do not configure it as a health check.
+`/healthz` only says the HTTP process is alive. `/health/ready` and `/api/health` additionally check that the service token is set and that Playwright can start and its Chromium binary exists. They do not make an upstream Perchance request. `/api/test/generate` attempts server-side generation and may take up to four minutes; Perchance can reject server automation. Do not configure it as a health check. For supported generation, use `/studio` in a browser.
 
 ## Configure the service
 
@@ -30,7 +31,7 @@ Set this secret in the Render service's Environment page:
 PERCHANCE_SERVICE_TOKEN=<a long random secret>
 ```
 
-The token is required for both generation routes. Do not expose it in browser code or commit it to Git.
+The token is required for the server-side `POST /perchance` and `POST /api/test/generate` routes. It is not used by `/studio`. Do not expose it in browser code or commit it to Git.
 
 In Render, set the service health-check path to `/healthz`. The service binds to `0.0.0.0` and Render's `$PORT` (default `10000`).
 
@@ -70,7 +71,7 @@ curl -i "$PERCHANCE_URL/api/test"
 - `seed`: `-1` for a random seed, otherwise a non-negative 32-bit integer.
 - `guidanceScale`: 1–30 (default 7).
 
-Errors return JSON: `401` missing/invalid service token; `413` image too large; `422` invalid input; `429` generation already in progress; `502` upstream generation failure; `503` token not configured; `504` generation timeout. The service does not silently fall back to another image provider.
+Errors return JSON: `401` missing/invalid service token; `413` image too large; `422` invalid input; `429` generation already in progress; `502` unexpected upstream failure; `503` token not configured or Perchance requires server-side browser verification; `504` generation timeout. On `PERCHANCE_BROWSER_VERIFICATION_REQUIRED`, no image was generated—use `/studio` or request an authorized server API from Perchance. The service does not try to bypass bot protections or fall back to another provider.
 
 ## SOHAM integration (optional)
 
