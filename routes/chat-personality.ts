@@ -22,6 +22,7 @@ import type { Request, Response } from 'express';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory } from '../core/orchestrator';
 import { buildSystemPrompt } from './system-prompt';
+import { parseGroqToolOptions } from '../routing/groq-tool-options';
 
 export async function chatPersonalityHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
@@ -34,6 +35,12 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
       return;
     }
 
+    let groqToolOptions;
+    try { groqToolOptions = parseGroqToolOptions(settings); }
+    catch (error) {
+      res.status(400).json({ error: 'INVALID_GROQ_TOOL_OPTIONS', message: error instanceof Error ? error.message : 'Invalid Groq tool options' });
+      return;
+    }
     const systemPrompt = buildSystemPrompt(settings.tone || 'helpful', settings.technicalLevel || 'intermediate');
 
     const convertedHistory = history.map((msg: any) => ({
@@ -51,13 +58,14 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
       preferredModelId,
       category: 'general',
       params: { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 4096 },
+      ...groqToolOptions,
     });
 
     persistSohamMemory({
       userId,
       userMessage: message,
       assistantMessage: result.response.text,
-      metadata: { toolsUsed: agentContext.toolsUsed.map((t: any) => t.tool), modelUsed: result.modelUsed, personalityEnabled: enablePersonality },
+      metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed, personalityEnabled: enablePersonality },
     }).catch(() => {});
 
     res.json({
@@ -65,7 +73,7 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
       content: result.response.text,
       modelUsed: result.modelUsed,
       autoRouted: result.fallbackTriggered,
-      toolsUsed: agentContext.toolsUsed,
+      toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' }))],
       responseTime: `${Date.now() - startTime}ms`,
       timestamp: new Date().toISOString(),
     });

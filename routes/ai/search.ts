@@ -51,7 +51,7 @@ export async function searchHandler(req: Request, res: Response): Promise<void> 
       res.status(400).json({
         error: 'MISSING_QUERY',
         message: 'query is required and must be a string',
-        example: { query: 'latest AI news', preferredModel: 'llama-3.1-8b-instant' },
+        example: { query: 'latest AI news', preferredModel: 'gemini-3.6-flash' },
       });
       return;
     }

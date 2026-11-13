@@ -2,7 +2,7 @@
  * Task Classifier Service
  * SOHAM V3.3 Multi-Model AI Router
  * 
- * Intelligent classification of user requests into 11 task categories using Groq Llama 3.2 3B.
+ * Intelligent classification of user requests into 11 task categories using Groq GPT-OSS 20B.
  * Provides confidence scoring, reasoning explanation, complexity estimation, and multimodal detection.
  * 
  * Requirements: 3.1-3.10
@@ -126,17 +126,10 @@ Respond with a JSON object containing:
 // ============================================================================
 
 export class TaskClassifierService {
-  private readonly groqApiKey: string;
-  private readonly classifierModelId = 'llama-3.1-8b-instant'; // Using Llama 3.1 8B as 3.2 3B was decommissioned
-  private readonly groqApiUrl = 'https://api.groq.com/openai/v1/chat/completions';
   private classificationHistory: Map<string, ClassificationResult[]> = new Map();
 
-  constructor(groqApiKey?: string) {
-    this.groqApiKey = groqApiKey || process.env.GROQ_API_KEY || '';
-    
-    if (!this.groqApiKey) {
-      console.warn('TaskClassifierService: GROQ_API_KEY not configured');
-    }
+  constructor(_apiKey?: string) {
+    // Intentionally uses local rules only: classification must never incur provider charges.
   }
 
   /**
@@ -160,26 +153,8 @@ export class TaskClassifierService {
       }
     }
 
-    // Build classification prompt
-    const prompt = this.buildClassificationPrompt(request);
-
-    try {
-      // Call Groq Llama 3.2 3B for classification
-      const response = await this.callGroqClassifier(prompt, request.conversationHistory);
-      
-      // Parse and validate response
-      const result = this.parseClassificationResponse(response, request, requiresMultimodal);
-      
-      // Store in history (if userId available in future)
-      // this.storeClassificationHistory(userId, result);
-      
-      return result;
-    } catch (error) {
-      console.error('TaskClassifierService: Classification failed:', error);
-      
-      // Fallback to rule-based classification
-      return this.fallbackClassification(request, requiresMultimodal);
-    }
+    // Use local rules; do not call a provider that may bill beyond a free quota.
+    return this.fallbackClassification(request, requiresMultimodal);
   }
 
   /**
@@ -275,63 +250,6 @@ export class TaskClassifierService {
   }
 
   /**
-   * Call Groq API for classification
-   */
-  private async callGroqClassifier(
-    prompt: string,
-    history?: Message[]
-  ): Promise<string> {
-    if (!this.groqApiKey) {
-      throw new Error('GROQ_API_KEY not configured');
-    }
-
-    const messages = [
-      { role: 'system', content: CLASSIFICATION_SYSTEM_PROMPT },
-      { role: 'user', content: prompt }
-    ];
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-
-    try {
-      const response = await fetch(this.groqApiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.groqApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.classifierModelId,
-          messages,
-          temperature: 0.3, // Low temperature for consistent classification
-          max_tokens: 500,
-          response_format: { type: 'json_object' }
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Groq API error: ${response.status} - ${errorText}`);
-      }
-
-      const data = await response.json() as any;
-      const content = data.choices?.[0]?.message?.content;
-
-      if (!content) {
-        throw new Error('No response from classifier');
-      }
-
-      return content;
-    } catch (error) {
-      clearTimeout(timeoutId);
-      throw error;
-    }
-  }
-
-  /**
    * Parse classification response from Groq
    */
   private parseClassificationResponse(
@@ -382,7 +300,7 @@ export class TaskClassifierService {
         requiresMultimodal,
         detectedLanguage: parsed.detectedLanguage || 'en',
         classifiedAt: new Date().toISOString(),
-        classifierModelUsed: this.classifierModelId,
+        classifierModelUsed: 'local-rules',
       };
     } catch (error) {
       console.error('Failed to parse classification response:', error);
@@ -408,7 +326,7 @@ export class TaskClassifierService {
       requiresMultimodal,
       detectedLanguage: this.detectLanguage(request.userMessage),
       classifiedAt: new Date().toISOString(),
-      classifierModelUsed: this.classifierModelId,
+      classifierModelUsed: 'local-rules',
     };
   }
 
@@ -572,8 +490,8 @@ export function getTaskClassifierService(): TaskClassifierService {
 /**
  * Initialize the classifier with custom API key
  */
-export function initializeTaskClassifierService(groqApiKey: string): TaskClassifierService {
-  classifierInstance = new TaskClassifierService(groqApiKey);
+export function initializeTaskClassifierService(apiKey?: string): TaskClassifierService {
+  classifierInstance = new TaskClassifierService(apiKey);
   return classifierInstance;
 }
 

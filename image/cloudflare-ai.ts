@@ -155,11 +155,11 @@ export async function cfGenerateImage(
 
 /**
  * Run a text-generation model on Cloudflare Workers AI.
- * Default model: @cf/meta/llama-3.1-8b-instruct
+ * Default model: @cf/meta/llama-3.1-8b-instruct-fast
  */
 export async function cfGenerateText(
   request: CFTextRequest,
-  model = '@cf/meta/llama-3.1-8b-instruct'
+  model = '@cf/meta/llama-3.1-8b-instruct-fast'
 ): Promise<CFTextResult> {
   const { accountId, apiToken, gatewayId } = getCredentials();
   const endpoint = buildEndpoint(accountId, model, gatewayId);

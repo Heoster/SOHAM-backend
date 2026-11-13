@@ -37,8 +37,8 @@ export class MemoryExtractionService {
       // Combine user message and assistant response
       const conversationText = `User: ${context.userMessage}\nAssistant: ${context.assistantResponse}`;
 
-      // Use Cerebras to extract important memories
-      const memories = await this.extractMemoriesWithCerebras(conversationText);
+      // Extract important memories with the configured Groq model, then rule-based fallback.
+      const memories = await this.extractMemoriesWithConfiguredProvider(conversationText);
 
       if (memories.length === 0) {
         console.log('[Memory Extraction] No important memories found');
@@ -100,74 +100,7 @@ export class MemoryExtractionService {
    * from a conversation using an LLM or rule-based fallback.
    */
   private async extractProfileFacts(conversationText: string): Promise<ExtractedProfileFacts> {
-    const cerebrasKey = process.env.CEREBRAS_API_KEY;
-    const groqKey = process.env.GROQ_API_KEY;
-
-    const provider: { key: string; baseUrl: string; model: string } | null =
-      cerebrasKey
-        ? { key: cerebrasKey, baseUrl: 'https://api.cerebras.ai/v1', model: 'llama3.1-8b' }
-        : groqKey
-        ? { key: groqKey, baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' }
-        : null;
-
-    if (provider) {
-      try {
-        const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${provider.key}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: provider.model,
-            messages: [
-              {
-                role: 'system',
-                content: `You are a profile extraction system. Extract structured personal information from conversations.
-
-Return ONLY a valid JSON object with these optional fields (omit fields not mentioned):
-{
-  "name": "string — user's first or full name",
-  "age": number — user's age,
-  "location": "string — city, country, or region",
-  "occupation": "string — job title or profession",
-  "language": "string — preferred language",
-  "likes": ["array of things the user likes: topics, foods, hobbies, technologies"],
-  "dislikes": ["array of things the user dislikes"],
-  "customFacts": {
-    "key": "value — any other important personal fact"
-  }
-}
-
-Rules:
-- Only extract information explicitly stated by the user (not the assistant)
-- Do NOT infer or guess
-- If nothing personal is mentioned, return {}
-- Keep values concise (under 60 chars each)
-- For likes/dislikes, extract specific items (e.g. "Python", "spicy food", "dark mode")`,
-              },
-              { role: 'user', content: conversationText },
-            ],
-            temperature: 0.1,
-            max_tokens: 400,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-
-        if (!response.ok) return {};
-
-        const data = await response.json() as any;
-        const raw = (data.choices[0].message.content as string).trim();
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) return {};
-
-        const parsed = JSON.parse(jsonMatch[0]);
-        return this.sanitizeProfileFacts(parsed);
-      } catch {
-        // Fall through to rule-based
-      }
-    }
-
+    // Deterministic extraction avoids potentially billable provider calls.
     return this.extractProfileFactsRuleBased(conversationText);
   }
 
@@ -259,89 +192,11 @@ Rules:
   }
 
   /**
-   * Extract memories using an LLM (Cerebras → Groq fallback).
+   * Extract memories using the configured Groq provider.
    * Falls back to rule-based extractor if no API key is available.
    */
-  private async extractMemoriesWithCerebras(conversationText: string): Promise<string[]> {
-    const cerebrasKey = process.env.CEREBRAS_API_KEY;
-    const groqKey = process.env.GROQ_API_KEY;
-
-    // Pick provider + correct model for that provider
-    const provider: { key: string; baseUrl: string; model: string } | null =
-      cerebrasKey
-        ? { key: cerebrasKey, baseUrl: 'https://api.cerebras.ai/v1', model: 'llama3.1-8b' }
-        : groqKey
-        ? { key: groqKey, baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' }
-        : null;
-
-    // ── LLM extraction path ────────────────────────────────────────────────
-    if (provider) {
-      try {
-        const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${provider.key}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: provider.model,
-            messages: [
-              {
-                role: 'system',
-                content: `You are a memory extraction system. Extract important, long-term facts from conversations.
-
-Return ONLY a JSON array of memory strings. Each memory must be:
-- A complete, standalone statement (no pronouns like "I" or "they")
-- Specific and concrete (not vague)
-- Worth remembering across future conversations
-- Written in third person: "User prefers..." / "User is..." / "User works on..."
-
-Categories to extract:
-- PERSONAL: name, age, location, contact info
-- PREFERENCE: likes, dislikes, preferred tools/styles/approaches
-- SKILL: expertise, proficiency, technologies known
-- CONTEXT: current projects, goals, work situation
-- FACT: any other important factual information
-
-Only extract genuinely important information. Skip small talk, greetings, and transient details.
-
-Examples:
-["User's name is Harsh", "User prefers TypeScript over JavaScript", "User is building a React app with Next.js", "User is an expert in Python and machine learning"]
-
-If nothing important to remember, return: []`,
-              },
-              { role: 'user', content: conversationText },
-            ],
-            temperature: 0.2,
-            max_tokens: 600,
-          }),
-          signal: AbortSignal.timeout(12000),
-        });
-
-        if (!response.ok) throw new Error(`API error: ${response.statusText}`);
-
-        const data = await response.json() as any;
-        const raw = (data.choices[0].message.content as string).trim();
-
-        // Extract JSON array even if wrapped in markdown code blocks
-        const jsonMatch = raw.match(/\[[\s\S]*\]/);
-        if (!jsonMatch) return [];
-
-        try {
-          const memories = JSON.parse(jsonMatch[0]);
-          return Array.isArray(memories)
-            ? memories.filter((m: any) => typeof m === 'string' && m.length > 10 && m.length < 300)
-            : [];
-        } catch {
-          console.warn('[Memory Extraction] Failed to parse LLM response as JSON');
-          return [];
-        }
-      } catch (error) {
-        console.warn('[Memory Extraction] LLM extraction failed, using rule-based fallback:', error instanceof Error ? error.message : error);
-      }
-    }
-
-    // ── Rule-based fallback (no API key needed) ────────────────────────────
+  private async extractMemoriesWithConfiguredProvider(conversationText: string): Promise<string[]> {
+    // Deterministic extraction avoids potentially billable provider calls.
     return this.extractMemoriesRuleBased(conversationText);
   }
 
@@ -543,8 +398,8 @@ If nothing important to remember, return: []`,
   }
 
   /**
-   * Memory extraction is always enabled — Cerebras is used when available,
-   * rule-based fallback is used otherwise.
+   * Memory extraction is always enabled — configured Groq is used when available,
+   * with a rule-based fallback when no provider is configured.
    */
   isEnabled(): boolean {
     return true;

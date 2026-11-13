@@ -9,7 +9,7 @@ import { z } from 'zod';
 export type ModelCategory = 'general' | 'coding' | 'math' | 'conversation' | 'multimodal';
 
 // Provider types - Only working providers
-export type ProviderType = 'groq' | 'huggingface' | 'google' | 'cerebras' | 'openrouter' | 'elevenlabs';
+export type ProviderType = 'groq' | 'google' | 'openrouter' | 'cloudflare' | 'elevenlabs';
 
 // Model parameters interface
 export interface ModelParams {
@@ -66,7 +66,7 @@ export interface ModelsConfigStore {
 // Zod schemas for validation
 export const ModelCategorySchema = z.enum(['general', 'coding', 'math', 'conversation', 'multimodal']);
 
-export const ProviderTypeSchema = z.enum(['groq', 'huggingface', 'google', 'cerebras', 'openrouter', 'elevenlabs']);
+export const ProviderTypeSchema = z.enum(['groq', 'google', 'openrouter', 'cloudflare', 'elevenlabs']);
 
 export const ModelParamsSchema = z.object({
   temperature: z.number().min(0).max(2),
@@ -168,6 +168,7 @@ export class AIServiceError extends Error {
   public readonly provider?: ProviderType;
   public readonly modelId?: string;
   public readonly retryable: boolean;
+  public readonly diagnostic: string;
 
   constructor(error: AIError) {
     super(error.message);
@@ -176,6 +177,7 @@ export class AIServiceError extends Error {
     this.provider = error.provider;
     this.modelId = error.modelId;
     this.retryable = error.retryable;
+    this.diagnostic = error.message;
   }
 
   toJSON(): AIError {
@@ -191,53 +193,33 @@ export class AIServiceError extends Error {
 
 // Helper to create user-friendly error messages
 export function createUserFriendlyError(error: unknown, provider?: ProviderType, modelId?: string): AIServiceError {
-  const errorMessage = error instanceof Error ? error.message : String(error);
-  
-  if (errorMessage.includes('API key') || errorMessage.includes('authentication') || errorMessage.includes('401')) {
-    return new AIServiceError({
-      code: 'AUTH_ERROR',
-      message: 'Authentication failed. Please check your API key configuration.',
-      provider,
-      modelId,
-      retryable: false,
-    });
+  const detail = error instanceof Error ? error.message : String(error);
+  const message = detail.toLowerCase();
+  const status = Number(message.match(/(?:http(?: status)?|status|error)\s*[:=]?\s*(\d{3})/i)?.[1] ?? 0);
+  let code: AIErrorCode = 'INVALID_RESPONSE';
+  let userMessage = 'An unexpected error occurred. Please try again.';
+  let retryable = true;
+
+  if (status === 401 || status === 403 || /api key not configured|authentication failed|unauthorized|invalid api key/.test(message)) {
+    code = 'AUTH_ERROR';
+    userMessage = `Authentication failed for ${provider ?? 'AI provider'}. Check the configured API credentials.`;
+    retryable = false;
+  } else if (status === 429 || /rate.?limit|quota|too many requests|resource exhausted/.test(message)) {
+    code = 'RATE_LIMIT';
+    userMessage = `${provider ?? 'AI provider'} is rate limited. Trying another provider.`;
+  } else if (status === 404 || /model.{0,40}(not found|unavailable|does not exist)|no endpoints found|selected model.{0,40}unavailable/.test(message)) {
+    code = 'MODEL_UNAVAILABLE';
+    userMessage = `${provider ?? 'AI provider'} model ${modelId ?? ''} is unavailable. Trying another model.`.trim();
+  } else if (status === 408 || status >= 500 || /network|fetch failed|econnrefused|etimedout|timeout|temporarily unavailable|overloaded|service unavailable/.test(message)) {
+    code = 'NETWORK_ERROR';
+    userMessage = `${provider ?? 'AI provider'} is temporarily unreachable. Trying another provider.`;
+  } else if (status >= 400) {
+    code = 'INVALID_RESPONSE';
+    userMessage = `${provider ?? 'AI provider'} rejected the request (HTTP ${status}). Check model settings and request limits.`;
   }
-  
-  if (errorMessage.includes('rate') || errorMessage.includes('quota') || errorMessage.includes('429')) {
-    return new AIServiceError({
-      code: 'RATE_LIMIT',
-      message: 'Service is temporarily busy. Please try again in a moment.',
-      provider,
-      modelId,
-      retryable: true,
-    });
-  }
-  
-  if (errorMessage.includes('network') || errorMessage.includes('ECONNREFUSED') || errorMessage.includes('timeout')) {
-    return new AIServiceError({
-      code: 'NETWORK_ERROR',
-      message: 'Network error. Please check your connection and try again.',
-      provider,
-      modelId,
-      retryable: true,
-    });
-  }
-  
-  if (errorMessage.includes('model') && (errorMessage.includes('not found') || errorMessage.includes('unavailable'))) {
-    return new AIServiceError({
-      code: 'MODEL_UNAVAILABLE',
-      message: 'The selected model is currently unavailable. Trying an alternative model.',
-      provider,
-      modelId,
-      retryable: true,
-    });
-  }
-  
-  return new AIServiceError({
-    code: 'INVALID_RESPONSE',
-    message: 'An unexpected error occurred. Please try again.',
-    provider,
-    modelId,
-    retryable: true,
-  });
+
+  const result = new AIServiceError({ code, message: userMessage, provider, modelId, retryable });
+  // Keep provider diagnostics for server logs while keeping the client-facing message safe.
+  Object.defineProperty(result, 'diagnostic', { value: detail.slice(0, 500), enumerable: false });
+  return result;
 }

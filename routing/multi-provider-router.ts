@@ -91,8 +91,8 @@ export async function generateWithFallback(request: RouterRequest): Promise<Rout
     }
   }
 
-  // All initial attempts failed - use smart fallback with all available free models
-  console.warn('Initial model attempts failed, using smart fallback across all free Hugging Face models...');
+  // Let the shared registry-based fallback try other enabled provider models.
+  console.warn('Initial model attempts failed; trying the shared multi-provider fallback chain.');
   
   try {
     const fallbackResult = await generateWithSmartFallback({

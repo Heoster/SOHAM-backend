@@ -202,7 +202,7 @@ Search Results:
 - Temperature: `0.3` (factual accuracy mode)
 - TopP: `0.9`
 - MaxTokens: `1024`
-- Model: user-specified or smart fallback (Groq → Cerebras → Google → HF)
+- Model: user-specified or smart fallback (Groq → Google → Cloudflare Workers AI → OpenRouter)
 
 If AI synthesis fails, the pipeline falls back to returning raw results directly.
 
@@ -230,7 +230,7 @@ Appends a formatted sources block to the AI answer:
 ```json
 {
   "query": "latest developments in quantum computing",
-  "preferredModel": "llama-3.1-8b-instant",
+  "preferredModel": "gemini-3.6-flash",
   "maxResults": 8,
   "includeTrace": true
 }
@@ -252,7 +252,7 @@ Appends a formatted sources block to the AI answer:
     }
   ],
   "queryType": "realtime",
-  "modelUsed": "llama-3.1-8b-instant",
+  "modelUsed": "gemini-3.6-flash",
   "searchTimeMs": 2400,
   "totalSources": 6,
   "stepTrace": {
@@ -260,7 +260,7 @@ Appends a formatted sources block to the AI answer:
     "step2_sourcesSelected": ["tavily", "firecrawl", "wikipedia"],
     "step3_rawResults": 12,
     "step4_mergedResults": 8,
-    "step5_aiSynthesis": "Used model: llama-3.1-8b-instant",
+    "step5_aiSynthesis": "Used model: gemini-3.6-flash",
     "step6_citationsAdded": 8
   },
   "responseTime": "3100ms",

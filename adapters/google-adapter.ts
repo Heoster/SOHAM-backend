@@ -53,6 +53,7 @@ interface GoogleStreamChunk {
     };
     finishReason?: string;
   }>;
+  error?: { message?: string; code?: number };
 }
 
 export class GoogleAdapter extends BaseProviderAdapter {
@@ -118,13 +119,17 @@ export class GoogleAdapter extends BaseProviderAdapter {
           const trimmed = line.trim();
           if (!trimmed.startsWith('data: ')) continue;
           const data = trimmed.slice(6);
+          let chunk: GoogleStreamChunk;
           try {
-            const chunk = JSON.parse(data) as GoogleStreamChunk;
-            const token = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (token) yield token;
+            chunk = JSON.parse(data) as GoogleStreamChunk;
           } catch {
-            // malformed chunk — skip
+            continue;
           }
+          if (chunk.error?.message) {
+            throw createUserFriendlyError(new Error(`Google HTTP ${chunk.error.code ?? 500}: ${chunk.error.message}`), 'google', model.id);
+          }
+          const token = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (token) yield token;
         }
       }
     } finally {
@@ -179,11 +184,11 @@ export class GoogleAdapter extends BaseProviderAdapter {
         ],
       };
       
-      console.log(`Calling Google Gemini API: ${apiUrl}`);
+      console.log(`Calling Google Gemini API for ${model.id}`);
       
       // Create AbortController for timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // Provider call timeout
       
       const response = await fetch(apiUrl, {
         method: 'POST',

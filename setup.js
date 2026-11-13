@@ -14,11 +14,13 @@ if (!fs.existsSync(envPath)) {
     fs.copyFileSync(envLocalPath, envPath);
   } else {
     console.log('📝 Creating .env from template...');
-    const template = `GROQ_API_KEY=your_groq_key_here
+    const template = `GROQ_API_KEY=
+GROQ_FREE_PLAN_ONLY=false
 GOOGLE_API_KEY=
-TAVILY_API_KEY=
+OPENROUTER_API_KEY=
 CLOUDFLARE_ACCOUNT_ID=
 CLOUDFLARE_AI_API_TOKEN=
+TAVILY_API_KEY=
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 UPSTASH_VECTOR_REST_URL=

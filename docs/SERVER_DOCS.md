@@ -48,8 +48,8 @@ User Input
 │                                  ▼                               │
 │                    ┌─────────────────────────┐                  │
 │                    │   Smart Fallback AI      │                  │
-│                    │   Groq → Cerebras →      │                  │
-│                    │   Google → HuggingFace   │                  │
+│                    │ Google free tier →      │                  │
+│                    │ OpenRouter free router  │                  │
 │                    │   (routing/)             │                  │
 │                    └─────────────────────────┘                  │
 │                                  │                               │
@@ -69,7 +69,7 @@ npm install
 
 # 2. Set up environment
 cp env.example .env
-# Edit .env — at minimum set GROQ_API_KEY
+# Edit .env — set GOOGLE_API_KEY or OPENROUTER_API_KEY
 
 # 3. Run in development
 npm run dev
@@ -78,7 +78,7 @@ npm run dev
 curl http://localhost:8080/api/health
 ```
 
-**Minimum requirement:** Only `GROQ_API_KEY` is required. Everything else degrades gracefully.
+**Minimum requirement:** Configure `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, or `GROQ_API_KEY` plus `GROQ_FREE_PLAN_ONLY=true` for a confirmed Groq Free-plan account. Groq is an optional, Free-plan-only route; set `GROQ_FREE_PLAN_ONLY=true` only when the Groq organization is on the $0 Free plan. No paid model fallback is configured.
 
 ---
 
@@ -105,8 +105,8 @@ curl http://localhost:8080/api/health
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/image/generate` | Full pipeline: CF → Pollinations → HuggingFace |
-| POST | `/api/image/generate-cf` | Cloudflare Workers AI only |
+| POST | `/api/image/generate` | Free Pollinations, with Cloudflare only after explicit opt-in |
+| POST | `/api/image/generate-cf` | Cloudflare Workers AI only (explicit opt-in required) |
 | GET | `/api/image/generate-cf` | Health check for CF image provider |
 
 ### Video
@@ -164,7 +164,7 @@ Full SOHAM orchestration: safety → classification → tools → RAG → AI →
 {
   "success": true,
   "content": "Current weather in Mumbai: 32°C, humidity 78%...",
-  "modelUsed": "llama-3.1-8b-instant",
+  "modelUsed": "gemini-3.6-flash",
   "autoRouted": false,
   "routingReasoning": "Direct model usage",
   "toolsUsed": [{ "tool": "weather_search", "query": "Mumbai", "ok": true, "output": "..." }],
@@ -185,7 +185,7 @@ Full SOHAM orchestration: safety → classification → tools → RAG → AI →
 ```json
 {
   "query": "latest AI news 2025",
-  "preferredModel": "llama-3.1-8b-instant",
+  "preferredModel": "gemini-3.6-flash",
   "maxResults": 8,
   "includeTrace": false
 }
@@ -198,7 +198,7 @@ Full SOHAM orchestration: safety → classification → tools → RAG → AI →
   "answer": "In 2025, AI has seen major advances... [1][2][3]\n\n**Sources:**\n[1] [Title](url)",
   "sources": [{ "index": 1, "title": "...", "url": "...", "snippet": "...", "source": "brave" }],
   "queryType": "news",
-  "modelUsed": "llama-3.1-8b-instant",
+  "modelUsed": "gemini-3.6-flash",
   "searchTimeMs": 1240,
   "totalSources": 6,
   "responseTime": "1890ms"
@@ -215,7 +215,7 @@ Full SOHAM orchestration: safety → classification → tools → RAG → AI →
   "problem": "Solve: 2x² + 5x - 3 = 0",
   "tone": "helpful",
   "technicalLevel": "intermediate",
-  "preferredModel": "llama-3.3-70b-versatile"
+  "preferredModel": "gemini-3.5-flash-lite"
 }
 ```
 
@@ -228,7 +228,7 @@ Full SOHAM orchestration: safety → classification → tools → RAG → AI →
 {
   "text": "Long article text here...",
   "style": "bullets",
-  "preferredModel": "llama-3.1-8b-instant"
+  "preferredModel": "gemini-3.6-flash"
 }
 ```
 
@@ -347,37 +347,47 @@ buildSohamPromptContext(message, userId)
 
 ---
 
+
+### Health monitoring
+
+- `GET /api/health/live` is a cheap, unauthenticated process liveness check.
+- `GET /api/health/ready` returns `200` only when at least one model in the enabled catalog has its provider credentials and feature gates configured; otherwise it returns `503`.
+- `GET /api/health` and `/api/health/services` report system resources, model availability, and integration configuration for Groq, Google, OpenRouter, GNews, Tavily, Firecrawl, You.com, CricAPI, Alpha Vantage, Wikipedia, DuckDuckGo, Open-Meteo, CoinGecko, Supabase, Upstash, image, and browser voice services.
+- `?probe=1` performs authenticated network probes. Send `Authorization: Bearer $SOHAM_API_KEY`. Probes to keyed services such as GNews, Tavily, Firecrawl, CricAPI, and Alpha Vantage may consume provider quota; the normal health endpoint only checks configuration and does not call them.
+
 ## AI Model Providers
 
 ### Provider Priority (Smart Fallback)
 
 ```
-Groq (primary — fastest)
-    ↓ fails
-Cerebras (fast fallback)
-    ↓ fails
-Google Gemini (reliable fallback)
-    ↓ fails
-HuggingFace Router (free fallback)
-    ↓ fails
-OpenRouter (multi-model gateway)
+Groq Free plan (explicit opt-in) → Google Gemini free tier → OpenRouter free-only router
 ```
 
-### Available Models
 
-| Provider | Models | Speed | Free |
-|----------|--------|-------|------|
-| Groq | llama-3.1-8b, llama-3.3-70b, mixtral-8x7b, gemma2-9b | ⚡⚡⚡ | ✅ |
-| Cerebras | llama-3.1-8b, llama-3.3-70b | ⚡⚡⚡ | ✅ |
-| Google | gemini-1.5-flash, gemini-1.5-pro | ⚡⚡ | ✅ (limited) |
-| HuggingFace | FLUX.1-schnell, various LLMs | ⚡ | ✅ |
-| OpenRouter | 100+ models | varies | some free |
+The active model catalog lives in `routing/models-config.json`. It contains Google Gemini free-tier models, OpenRouter's dynamic free router, and Groq GPT-OSS 120B / GPT-OSS 20B / Qwen 3.8 27B. Groq is unavailable unless `GROQ_FREE_PLAN_ONLY=true`; only use that opt-in with a confirmed $0 Free-plan Groq account because Groq also publishes Developer-plan token prices for these model IDs. Cloudflare text inference remains excluded. The intent router only chooses IDs in that enabled catalog; category routing is supplemented by all enabled providers so model categories cannot hide cross-provider fallback choices. Model IDs and provider lifecycle should be reviewed against each provider's model catalog when updating this file.
 
 ### Model Selection
 
 - `"model": "auto"` → Auto-router picks best model for query type
-- `"model": "llama-3.1-8b-instant"` → Use specific model with fallback
+- `"model": "gemini-3.6-flash"` → Use a catalog model; fallback stays within the free-only catalog
 - Smart fallback automatically switches on failure (rate limit, timeout, error)
+
+### Groq Tools (Free-plan opt-in)
+
+Set `GROQ_API_KEY` and `GROQ_FREE_PLAN_ONLY=true` only for an account confirmed on Groq's $0 Free plan. GPT-OSS 20B/120B support Groq built-ins `browser_search` and `code_interpreter`. GPT-OSS and Qwen 3.8 27B can also use SOHAM's allowlisted local function tools, which dispatch into the existing web/news (including GNews), weather, sports, and finance services.
+
+```json
+{
+  "message": "Find recent AI news and summarize it",
+  "settings": {
+    "model": "groq-gpt-oss-120b",
+    "groqBuiltinTools": ["browser_search"],
+    "enableLocalToolCalling": true
+  }
+}
+```
+
+Built-in tools are opt-in per request to avoid unexpected searches or code execution. `groqBuiltinTools` only accepts `browser_search` and `code_interpreter`; local tool calls are allowlisted and limited to three execution rounds. With local function calling enabled, chat/stream uses a complete response event for the tool loop and then emits the final text.
 
 ---
 
@@ -420,18 +430,11 @@ The system works fine — memory features are silently skipped. No errors.
 ### Pipeline (Fallback Chain)
 
 ```
-1. Cloudflare Workers AI (flux-1-schnell)
-   Needs: CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_AI_API_TOKEN
-   Speed: ~3s | Quality: ⭐⭐⭐⭐⭐
-       ↓ fails
-2. Pollinations.ai (FLUX)
-   Needs: nothing (free)
-   Speed: ~1.6s | Quality: ⭐⭐⭐⭐
-       ↓ fails
-3. HuggingFace Router (FLUX.1-schnell)
-   Needs: HUGGINGFACE_API_KEY
-   Speed: ~7s | Quality: ⭐⭐⭐⭐⭐
+1. Pollinations.ai (free default)
+2. Cloudflare Workers AI (explicit opt-in only)
 ```
+
+Cloudflare image generation requires `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AI_API_TOKEN` and `ENABLE_CLOUDFLARE_IMAGE_AI=true`. It is disabled by default because usage beyond the free Neurons allocation may be billable. Pollinations requires no key.
 
 ### Rate Limiting
 - 10 images per user per day (UTC)
@@ -482,15 +485,15 @@ The system works fine — memory features are silently skipped. No errors.
 ## Environment Variables
 
 ```env
-# ── REQUIRED ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY=                    # https://console.groq.com/keys
-
-# ── AI PROVIDERS (optional, improves quality) ─────────────────────────────────
+# ── FREE AI PROVIDERS ────────────────────────────────────────────────────────
+GROQ_API_KEY=                    # Optional; Groq $0 Free plan only
+GROQ_FREE_PLAN_ONLY=false       # Set true only after confirming the Groq account is Free, not Developer
 GOOGLE_API_KEY=                  # https://aistudio.google.com/app/apikey
 GOOGLE_AI_API_KEY=               # Same key, used for embeddings
-CEREBRAS_API_KEY=                # https://cloud.cerebras.ai
-HUGGINGFACE_API_KEY=             # https://huggingface.co/settings/tokens
 OPENROUTER_API_KEY=              # https://openrouter.ai/keys
+CLOUDFLARE_ACCOUNT_ID=           # Cloudflare account ID
+CLOUDFLARE_AI_API_TOKEN=         # Optional image generation support (separate from chat)
+ENABLE_CLOUDFLARE_IMAGE_AI=false # Explicit opt-in; Workers AI usage can exceed free neurons
 
 # ── SEARCH (optional, improves search quality) ────────────────────────────────
 BRAVE_SEARCH_API_KEY=            # https://brave.com/search/api/ (RECOMMENDED)
@@ -501,7 +504,8 @@ ALPHA_VANTAGE_API_KEY=           # https://alphavantage.co
 
 # ── IMAGE GENERATION (optional) ───────────────────────────────────────────────
 CLOUDFLARE_ACCOUNT_ID=           # Cloudflare dashboard
-CLOUDFLARE_AI_API_TOKEN=         # Workers AI:Edit permission
+CLOUDFLARE_AI_API_TOKEN=         # Optional image generation support (separate from chat)
+ENABLE_CLOUDFLARE_IMAGE_AI=false # Explicit opt-in; Workers AI usage can exceed free neurons
 CLOUDFLARE_AI_GATEWAY_ID=        # Optional: AI Gateway for caching
 
 # ── MEMORY / DATABASE (optional) ──────────────────────────────────────────────
@@ -603,9 +607,8 @@ server/
 │
 ├── adapters/                    ← AI Provider Adapters
 │   ├── groq-adapter.ts
-│   ├── cerebras-adapter.ts
 │   ├── google-adapter.ts
-│   ├── huggingface-adapter.ts
+│   ├── cloudflare-adapter.ts
 │   ├── openrouter-adapter.ts
 │   ├── types.ts
 │   └── index.ts

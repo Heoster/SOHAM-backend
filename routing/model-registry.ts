@@ -3,16 +3,16 @@
  * Manages available AI models and provides methods to query and select models
  */
 
-import type { ModelConfig, ModelCategory, ProviderConfig, ProviderType } from './model-config';
+import { validateModelsConfigStore, type ModelConfig, type ModelCategory, type ProviderConfig, type ProviderType } from './model-config';
 
 interface ModelsConfigStore {
   providers: Record<string, ProviderConfig>;
   models: ModelConfig[];
 }
-import modelsConfigData from './models-config-v3.3.json';
+import modelsConfigData from './models-config.json';
 
 // Type assertion for the imported JSON
-const modelsConfig = modelsConfigData as ModelsConfigStore;
+const modelsConfig = validateModelsConfigStore(modelsConfigData) as ModelsConfigStore;
 
 // Provider availability cache
 const providerAvailability: Map<ProviderType, boolean> = new Map();
@@ -22,6 +22,9 @@ const providerAvailability: Map<ProviderType, boolean> = new Map();
  */
 function checkProviderApiKey(provider: ProviderConfig): boolean {
   if (!provider.enabled) return false;
+  // Groq's model catalog lists Developer-plan token prices. Only enable inference
+  // when the operator explicitly confirms this credential belongs to a $0 Free plan.
+  if (provider.type === 'groq' && process.env.GROQ_FREE_PLAN_ONLY !== 'true') return false;
   
   // In browser environment, we can't check env vars directly
   // This will be checked server-side
@@ -30,12 +33,14 @@ function checkProviderApiKey(provider: ProviderConfig): boolean {
   }
   
   const apiKey = process.env[provider.apiKeyEnvVar];
-  
-  // Check if API key exists, has length, and is not a placeholder
-  const isValid = !!apiKey && 
-                  apiKey.length > 0 && 
-                  !apiKey.includes('your_') && 
-                  !apiKey.includes('_here');
+  const requiredCredentials = provider.type === 'cloudflare'
+    ? [apiKey, process.env.CLOUDFLARE_ACCOUNT_ID]
+    : [apiKey];
+
+  // Check every required credential exists and is not a template placeholder.
+  const isValid = requiredCredentials.every(value =>
+    !!value && value.length > 0 && !value.includes('your_') && !value.includes('_here')
+  );
   
   return isValid;
 }
@@ -45,13 +50,16 @@ function checkProviderApiKey(provider: ProviderConfig): boolean {
  */
 function initializeProviderAvailability(): void {
   for (const [key, provider] of Object.entries(modelsConfig.providers)) {
+    if (!provider.enabled) {
+      providerAvailability.set(provider.type, false);
+      continue;
+    }
     const isAvailable = checkProviderApiKey(provider);
     providerAvailability.set(provider.type, isAvailable);
-    
-    if (!isAvailable) {
-      console.warn(
-        `⚠️ ${provider.apiKeyEnvVar} is not set. Models from ${key} provider will be unavailable.`
-      );
+    if (!isAvailable && provider.type === 'groq' && process.env.GROQ_FREE_PLAN_ONLY !== 'true') {
+      console.warn('⚠️ Groq models are disabled; set GROQ_FREE_PLAN_ONLY=true only for a confirmed $0 Free-plan account.');
+    } else if (!isAvailable) {
+      console.warn(`⚠️ ${provider.apiKeyEnvVar} is not set. Models from ${key} provider will be unavailable.`);
     }
   }
 }
@@ -69,6 +77,11 @@ export class ModelRegistry {
   constructor() {
     this.models = modelsConfig.models;
     this.providers = modelsConfig.providers;
+  }
+
+  /** Return a defensive copy of every configured model, including unavailable entries. */
+  getAllModels(): ModelConfig[] {
+    return [...this.models];
   }
 
   /**
@@ -239,14 +252,12 @@ export class ModelRegistry {
     switch (providerType) {
       case 'groq':
         return 'Groq';
-      case 'huggingface':
-        return 'Hugging Face';
       case 'google':
         return 'Google';
-      case 'cerebras':
-        return 'Cerebras';
       case 'openrouter':
         return 'OpenRouter';
+      case 'cloudflare':
+        return 'Cloudflare Workers AI';
       default:
         return providerType;
     }
