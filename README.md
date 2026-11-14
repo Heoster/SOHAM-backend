@@ -41,6 +41,10 @@ npm run build
 npm start
 ```
 
+## CI/CD
+
+GitHub Actions runs `npm ci`, TypeScript typechecking, the production build, and mocked Cloudflare integration tests on pushes and pull requests. The Render Blueprint sets `autoDeployTrigger: checksPass`, so the linked SOHAM web service deploys changes only after repository CI checks pass. Keep the Render service linked to the `main` branch and sync the Blueprint in Render for this deployment policy to take effect.
+
 ## Main endpoints
 
 | Endpoint | Method | Description |
