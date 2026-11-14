@@ -105,9 +105,9 @@ curl http://localhost:8080/api/health
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/image/generate` | Free Pollinations, with Cloudflare only after explicit opt-in |
+| POST | `/api/image/generate` | Opt-in Cloudflare image generation, falling back to Pollinations |
 | POST | `/api/image/generate-cf` | Cloudflare Workers AI only (explicit opt-in required) |
-| GET | `/api/image/generate-cf` | Health check for CF image provider |
+| GET | `/api/image/generate-cf` | Non-generative CF image capability/configuration check |
 
 ### Video
 
@@ -360,16 +360,17 @@ buildSohamPromptContext(message, userId)
 ### Provider Priority (Smart Fallback)
 
 ```
-Groq Free plan (explicit opt-in) → Google Gemini free tier → OpenRouter free-only router
+Groq Free plan (explicit opt-in) → Google Gemini free tier → OpenRouter free-only router → Cloudflare Workers AI (explicit text opt-in)
 ```
 
 
-The active model catalog lives in `routing/models-config.json`. It contains Google Gemini free-tier models, OpenRouter's dynamic free router, and Groq GPT-OSS 120B / GPT-OSS 20B / Qwen 3.8 27B. Groq is unavailable unless `GROQ_FREE_PLAN_ONLY=true`; only use that opt-in with a confirmed $0 Free-plan Groq account because Groq also publishes Developer-plan token prices for these model IDs. Cloudflare text inference remains excluded. The intent router only chooses IDs in that enabled catalog; category routing is supplemented by all enabled providers so model categories cannot hide cross-provider fallback choices. Model IDs and provider lifecycle should be reviewed against each provider's model catalog when updating this file.
+The active model catalog lives in `routing/models-config.json`. It contains Google Gemini free-tier models, OpenRouter's dynamic free router, Groq GPT-OSS 120B / GPT-OSS 20B / Qwen 3.8 27B, and opt-in Cloudflare Workers AI Granite 4.0 H Micro / GPT-OSS 20B. Groq is unavailable unless `GROQ_FREE_PLAN_ONLY=true`; only use that opt-in with a confirmed $0 Free-plan Groq account. Cloudflare text models are available only when `ENABLE_CLOUDFLARE_TEXT_AI=true` and account credentials are configured. SOHAM uses Cloudflare's documented OpenAI-compatible `POST /accounts/{account_id}/ai/v1/chat/completions` endpoint; create a token with Workers AI Read and Edit permissions. Cloudflare has a shared 10,000-Neuron daily free allocation; overage requires Workers Paid and is billed, so the feature flag is not a spending cap. As checked against Cloudflare's [pricing table](https://developers.cloudflare.com/workers-ai/platform/pricing/) on 2026-11-13, Granite 4.0 H Micro is listed at $0.017/M input and $0.112/M output tokens; GPT-OSS 20B is listed at $0.20/M input and $0.30/M output tokens. Prices and model availability can change. The intent router only chooses IDs in the enabled catalog; category routing is supplemented by all enabled providers so model categories cannot hide cross-provider fallback choices. Model IDs and provider lifecycle should be reviewed against each provider's model catalog when updating this file.
 
 ### Model Selection
 
 - `"model": "auto"` → Auto-router picks best model for query type
-- `"model": "gemini-3.6-flash"` → Use a catalog model; fallback stays within the free-only catalog
+- `"model": "gemini-3.6-flash"` → Use a catalog model; fallback stays within enabled providers
+- `"model": "cloudflare-granite-4-micro"` or `"cloudflare-gpt-oss-20b"` → Cloudflare Workers AI, only with its explicit text opt-in enabled
 - Smart fallback automatically switches on failure (rate limit, timeout, error)
 
 ### Groq Tools (Free-plan opt-in)
@@ -431,11 +432,13 @@ The system works fine — memory features are silently skipped. No errors.
 ### Pipeline (Fallback Chain)
 
 ```
-1. Pollinations.ai (free default)
-2. Cloudflare Workers AI (explicit opt-in only)
+1. Cloudflare Workers AI FLUX.1 schnell (only when explicitly enabled)
+2. Pollinations.ai (no key; fallback)
 ```
 
-Cloudflare image generation requires `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AI_API_TOKEN` and `ENABLE_CLOUDFLARE_IMAGE_AI=true`. It is disabled by default because usage beyond the free Neurons allocation may be billable. Pollinations requires no key.
+The direct Cloudflare image route is `POST /api/image/generate-cf` with `{ "prompt": "...", "steps": 4 }`; FLUX.1 schnell accepts prompts up to 2048 characters and 1–8 inference steps. Its output is returned as an image data URI. `GET /api/image/generate-cf` reports whether the feature is configured without generating an image. The model API does not expose a documented aspect-ratio input, so output dimensions are model-controlled.
+
+Cloudflare image generation requires `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_API_TOKEN`, and `ENABLE_CLOUDFLARE_IMAGE_AI=true`. It is disabled by default. Workers AI currently includes 10,000 Neurons/day across the account; additional usage requires Workers Paid and is billed at the rate shown in Cloudflare's [current pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/). The current FLUX.1 schnell price is listed as 4.8 Neurons per 512x512 tile plus 9.6 Neurons per step; image charges depend on tile count and steps. The gate is an explicit opt-in, not a billing cap. Pollinations requires no key.
 
 ### Rate Limiting
 - 10 images per user per day (UTC)
@@ -493,8 +496,8 @@ GOOGLE_API_KEY=                  # https://aistudio.google.com/app/apikey
 GOOGLE_AI_API_KEY=               # Same key, used for embeddings
 OPENROUTER_API_KEY=              # https://openrouter.ai/keys
 CLOUDFLARE_ACCOUNT_ID=           # Cloudflare account ID
-CLOUDFLARE_AI_API_TOKEN=         # Optional image generation support (separate from chat)
-ENABLE_CLOUDFLARE_IMAGE_AI=false # Explicit opt-in; Workers AI usage can exceed free neurons
+CLOUDFLARE_AI_API_TOKEN=         # Workers AI Read + Edit permissions
+ENABLE_CLOUDFLARE_TEXT_AI=false  # Explicit opt-in for Cloudflare chat models
 
 # ── SEARCH (optional, improves search quality) ────────────────────────────────
 BRAVE_SEARCH_API_KEY=            # https://brave.com/search/api/ (RECOMMENDED)
@@ -504,10 +507,8 @@ CRICAPI_KEY=                     # https://cricapi.com
 ALPHA_VANTAGE_API_KEY=           # https://alphavantage.co
 
 # ── IMAGE GENERATION (optional) ───────────────────────────────────────────────
-CLOUDFLARE_ACCOUNT_ID=           # Cloudflare dashboard
-CLOUDFLARE_AI_API_TOKEN=         # Optional image generation support (separate from chat)
-ENABLE_CLOUDFLARE_IMAGE_AI=false # Explicit opt-in; Workers AI usage can exceed free neurons
-CLOUDFLARE_AI_GATEWAY_ID=        # Optional: AI Gateway for caching
+ENABLE_CLOUDFLARE_IMAGE_AI=false # Explicit opt-in for Cloudflare FLUX.1 schnell
+CLOUDFLARE_AI_GATEWAY_ID=        # Optional AI Gateway slug
 
 # ── MEMORY / DATABASE (optional) ──────────────────────────────────────────────
 SUPABASE_URL=                    # https://supabase.com/dashboard

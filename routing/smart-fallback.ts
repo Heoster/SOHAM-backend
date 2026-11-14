@@ -166,8 +166,9 @@ function isCriticalFailure(error: unknown): boolean {
 function getFallbackModels(category: ModelCategory): ModelConfig[] {
   const registry = getModelRegistry();
 
-  // Prefer Groq for low latency, then Google, Cloudflare, and OpenRouter.
-  const providerOrder = ['groq', 'google', 'openrouter'];
+  // Prefer Groq, Google, and OpenRouter; Cloudflare is appended only when its
+  // explicit Workers AI text opt-in and account credentials are configured.
+  const providerOrder = ['groq', 'google', 'openrouter', 'cloudflare'];
 
   const categoryModels = registry.getModelsByCategory(category);
   const allModels = registry.getAvailableModels();

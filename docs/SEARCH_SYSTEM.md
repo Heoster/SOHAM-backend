@@ -209,7 +209,7 @@ Search Results:
 - Temperature: `0.3` (factual accuracy mode)
 - TopP: `0.9`
 - MaxTokens: `1024`
-- Model: user-specified or smart fallback (Groq → Google → Cloudflare Workers AI → OpenRouter)
+- Model: user-specified or smart fallback (Groq → Google → OpenRouter → Cloudflare Workers AI when explicitly enabled)
 
 If AI synthesis fails, the pipeline falls back to returning raw results directly.
 

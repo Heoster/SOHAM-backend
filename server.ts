@@ -52,7 +52,7 @@ import { summarizeHandler } from './routes/ai/summarize';
 import { imageSolverHandler } from './routes/ai/image-solver';
 import { pdfAnalyzerHandler } from './routes/ai/pdf-analyzer';
 import { generateImageHandler } from './routes/image/generate';
-import { generateImageCFHandler } from './routes/image/generate-cf';
+import { generateImageCFHandler, generateImageCFHealthHandler } from './routes/image/generate-cf';
 import { ttsHandler } from './routes/voice/tts';
 import { transcribeHandler } from './routes/voice/transcribe';
 import { extractMemoriesHandler } from './routes/memory/extract';
@@ -229,6 +229,7 @@ app.post('/api/ai/pdf-analyzer', withTimeout(pdfAnalyzerHandler,  120_000));
 // ── Image Generation ──────────────────────────────────────────────────────────
 app.post('/api/image/generate',    withTimeout(generateImageHandler,   90_000));
 app.post('/api/image/generate-cf', withTimeout(generateImageCFHandler, 90_000));
+app.get('/api/image/generate-cf',  generateImageCFHealthHandler);
 
 // ── Voice (60s timeout) ───────────────────────────────────────────────────────
 app.post('/api/voice/tts',        withTimeout(ttsHandler,        60_000));
@@ -300,6 +301,7 @@ app.use((req: Request, res: Response) => {
       'POST /api/ai/fact-check',
       'POST /api/image/generate',
       'POST /api/image/generate-cf',
+      'GET  /api/image/generate-cf',
       'POST /api/voice/tts',
       'POST /api/voice/transcribe',
       'POST /api/memory/extract',

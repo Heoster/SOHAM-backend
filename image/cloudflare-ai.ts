@@ -11,32 +11,26 @@
  *
  * Required env vars:
  *   CLOUDFLARE_ACCOUNT_ID   — found in the Cloudflare dashboard sidebar
- *   CLOUDFLARE_AI_API_TOKEN — an API token with "Workers AI:Edit" permission
+ *   CLOUDFLARE_AI_API_TOKEN — a token with Workers AI Read and Edit permissions
  *
  * Optional env var:
- *   CLOUDFLARE_AI_GATEWAY_ID — AI Gateway slug (e.g. "default") for caching /
- *                              analytics.  When set, requests are routed through
- *                              https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/workers-ai/{model}
+ *   CLOUDFLARE_AI_GATEWAY_ID — AI Gateway slug (e.g. "default") for analytics,
+ *                              caching, and gateway policies.
  */
 
 const CF_BASE = 'https://api.cloudflare.com/client/v4/accounts';
-const CF_GW_BASE = 'https://gateway.ai.cloudflare.com/v1';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 export interface CFImageRequest {
-  /** Text prompt for the image */
+  /** Text prompt for the image (FLUX.1 schnell accepts 1–2048 characters). */
   prompt: string;
-  /** Aspect ratio string, e.g. "16:9", "1:1", "9:16" */
-  aspect_ratio?: string;
-  /** Number of inference steps (higher = better quality, slower) */
-  num_steps?: number;
-  /** Guidance scale */
-  guidance?: number;
+  /** Diffusion steps; FLUX.1 schnell supports at most 8 (default 4). */
+  steps?: number;
 }
 
 export interface CFImageResult {
-  /** Base64-encoded PNG/JPEG returned by the API */
+  /** Base64 data URI containing the generated PNG/JPEG image. */
   imageBase64: string;
   /** MIME type of the returned image */
   contentType: string;
@@ -60,7 +54,7 @@ export interface CFTextResult {
 function getCredentials() {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CLOUDFLARE_AI_API_TOKEN;
-  const gatewayId = process.env.CLOUDFLARE_AI_GATEWAY_ID; // optional
+  const gatewayId = process.env.CLOUDFLARE_AI_GATEWAY_ID?.trim() || undefined; // optional
 
   if (!accountId || !apiToken) {
     throw new Error(
@@ -72,15 +66,14 @@ function getCredentials() {
 }
 
 /**
- * Build the endpoint URL.
- * Uses AI Gateway when CLOUDFLARE_AI_GATEWAY_ID is set, otherwise direct API.
+ * Build the direct REST endpoint; AI Gateway routing is selected with its documented header.
  */
-function buildEndpoint(accountId: string, model: string, gatewayId?: string): string {
-  if (gatewayId) {
-    // AI Gateway URL format
-    return `${CF_GW_BASE}/${accountId}/${gatewayId}/workers-ai/${model}`;
-  }
-  return `${CF_BASE}/${accountId}/ai/run/${model}`;
+function buildEndpoint(accountId: string, model: string): string {
+  return `${CF_BASE}/${encodeURIComponent(accountId)}/ai/run/${model}`;
+}
+
+function gatewayHeaders(gatewayId?: string): Record<string, string> {
+  return gatewayId ? { 'cf-aig-gateway-id': gatewayId } : {};
 }
 
 // ── Image Generation ───────────────────────────────────────────────────────────
@@ -88,31 +81,35 @@ function buildEndpoint(accountId: string, model: string, gatewayId?: string): st
 /**
  * Generate an image using a Cloudflare Workers AI image model.
  *
- * Default model: @cf/black-forest-labs/flux-1-schnell
- * Other options:  @cf/stabilityai/stable-diffusion-xl-base-1.0
- *                 @cf/lykon/dreamshaper-8-lcm
- *
- * Returns a base64 data URL ready to embed in <img src="…">.
+ * Uses the documented @cf/black-forest-labs/flux-1-schnell model and its
+ * `prompt` + `steps` input schema. Returns a base64 data URL for <img src>.
  */
 export async function cfGenerateImage(
   request: CFImageRequest,
   model = '@cf/black-forest-labs/flux-1-schnell'
 ): Promise<CFImageResult> {
+  if (process.env.ENABLE_CLOUDFLARE_IMAGE_AI !== 'true') {
+    throw new Error('Cloudflare image AI is disabled; set ENABLE_CLOUDFLARE_IMAGE_AI=true to opt in.');
+  }
   const { accountId, apiToken, gatewayId } = getCredentials();
-  const endpoint = buildEndpoint(accountId, model, gatewayId);
+  const endpoint = buildEndpoint(accountId, model);
 
-  const body: Record<string, unknown> = {
-    prompt: request.prompt,
-  };
-  if (request.aspect_ratio) body.aspect_ratio = request.aspect_ratio;
-  if (request.num_steps !== undefined) body.num_steps = request.num_steps;
-  if (request.guidance !== undefined) body.guidance = request.guidance;
+  const prompt = request.prompt.trim();
+  if (!prompt || prompt.length > 2048) {
+    throw new Error('Cloudflare FLUX prompt must be between 1 and 2048 characters.');
+  }
+  const steps = request.steps ?? 4;
+  if (!Number.isInteger(steps) || steps < 1 || steps > 8) {
+    throw new Error('Cloudflare FLUX steps must be an integer from 1 to 8.');
+  }
+  const body: Record<string, unknown> = { prompt, steps };
 
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiToken}`,
       'Content-Type': 'application/json',
+      ...gatewayHeaders(gatewayId),
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(60_000),
@@ -154,21 +151,24 @@ export async function cfGenerateImage(
 // ── Text / Chat ────────────────────────────────────────────────────────────────
 
 /**
- * Run a text-generation model on Cloudflare Workers AI.
- * Default model: @cf/meta/llama-3.1-8b-instruct-fast
+ * Low-level text-generation helper. The routed chat integration uses CloudflareAdapter.
  */
 export async function cfGenerateText(
   request: CFTextRequest,
-  model = '@cf/meta/llama-3.1-8b-instruct-fast'
+  model = '@cf/ibm-granite/granite-4.0-h-micro'
 ): Promise<CFTextResult> {
+  if (process.env.ENABLE_CLOUDFLARE_TEXT_AI !== 'true') {
+    throw new Error('Cloudflare text AI is disabled; set ENABLE_CLOUDFLARE_TEXT_AI=true to opt in.');
+  }
   const { accountId, apiToken, gatewayId } = getCredentials();
-  const endpoint = buildEndpoint(accountId, model, gatewayId);
+  const endpoint = buildEndpoint(accountId, model);
 
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiToken}`,
       'Content-Type': 'application/json',
+      ...gatewayHeaders(gatewayId),
     },
     body: JSON.stringify({
       prompt: request.prompt,

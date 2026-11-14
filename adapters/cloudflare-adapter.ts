@@ -14,7 +14,8 @@ export class CloudflareAdapter extends BaseProviderAdapter {
   private readonly endpoint = 'https://api.cloudflare.com/client/v4/accounts';
 
   isAvailable(): boolean {
-    return Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN);
+    return process.env.ENABLE_CLOUDFLARE_TEXT_AI === 'true'
+      && Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN);
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
@@ -68,6 +69,9 @@ export class CloudflareAdapter extends BaseProviderAdapter {
   }
 
   private async request(request: GenerateRequest, stream: boolean): Promise<Response> {
+    if (process.env.ENABLE_CLOUDFLARE_TEXT_AI !== 'true') {
+      throw createUserFriendlyError(new Error('Cloudflare Workers AI text is disabled; set ENABLE_CLOUDFLARE_TEXT_AI=true to opt in'), 'cloudflare', request.model.id);
+    }
     const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
     const apiToken = process.env.CLOUDFLARE_AI_API_TOKEN;
     if (!accountId || !apiToken) {
@@ -79,9 +83,14 @@ export class CloudflareAdapter extends BaseProviderAdapter {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 55000);
     try {
+      const gatewayId = process.env.CLOUDFLARE_AI_GATEWAY_ID?.trim();
       return await fetch(`${this.endpoint}/${encodeURIComponent(accountId)}/ai/v1/chat/completions`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+          ...(gatewayId ? { 'cf-aig-gateway-id': gatewayId } : {}),
+        },
         body: JSON.stringify({
           model: model.modelId,
           messages: this.buildMessages(prompt, systemPrompt, history),

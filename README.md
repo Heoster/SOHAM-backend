@@ -12,10 +12,11 @@ cp env.example .env
 npm run dev
 ```
 
-Chat routing uses free-tier Google Gemini models and OpenRouter’s free router. Groq GPT-OSS 120B, GPT-OSS 20B, and Qwen 3.8 27B are also supported, but Groq routing is disabled unless `GROQ_FREE_PLAN_ONLY=true` confirms the key belongs to Groq’s $0 Free plan. Groq’s model docs also list Developer-plan per-token prices, so do not enable this flag on a Developer/paid account. Configure:
+Chat routing uses free-tier Google Gemini models and OpenRouter’s free router. Groq GPT-OSS 120B, GPT-OSS 20B, and Qwen 3.8 27B are also supported, but Groq routing is disabled unless `GROQ_FREE_PLAN_ONLY=true` confirms the key belongs to Groq’s $0 Free plan. Cloudflare Workers AI chat is supported with Granite 4.0 H Micro and GPT-OSS 20B, but is disabled unless `ENABLE_CLOUDFLARE_TEXT_AI=true`; Cloudflare usage shares account-level Neuron quota and may be billed beyond the free allocation. Configure:
 
 - `GOOGLE_API_KEY` and/or `OPENROUTER_API_KEY`
 - `GROQ_API_KEY` plus `GROQ_FREE_PLAN_ONLY=true` only for a confirmed Groq Free-plan account
+- `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AI_API_TOKEN` + `ENABLE_CLOUDFLARE_TEXT_AI=true` to opt in to Cloudflare chat
 
 OpenRouter uses its `openrouter/free` dynamic router rather than a fixed free model ID. This avoids pinning fallback to a model that a provider has retired or temporarily disabled. If a provider rate limit is exhausted, routing falls back only to another enabled catalog model; no paid model fallback is configured. Google free-tier access and provider quotas are subject to the provider’s current terms.
 
@@ -53,7 +54,9 @@ npm start
 | `/api/ai/search` | `POST` | Web search (Tavily + Firecrawl) |
 | `/api/ai/solve` | `POST` | Math and logic problem solver |
 | `/api/ai/pdf-analyzer` | `POST` | Multimodal PDF analysis |
-| `/api/image/generate` | `POST` | Pollinations image generation; Cloudflare requires explicit opt-in |
+| `/api/image/generate` | `POST` | Opt-in Cloudflare image generation, falling back to Pollinations |
+| `/api/image/generate-cf` | `POST` | Cloudflare FLUX.1 schnell image generation (explicit opt-in) |
+| `/api/image/generate-cf` | `GET` | Cloudflare image capability/configuration (no generation) |
 | `/api/voice/tts` | `POST` | Browser text-to-speech fallback |
 
 ## Architecture
@@ -64,4 +67,4 @@ npm start
 - **Smart fallback** (`routing/smart-fallback.ts`): cross-provider fallback, model circuit breakers, context checks, and safe streaming failover (only before output starts).
 - **Memory** (`memory/`): Supabase history and semantic retrieval.
 
-The Google Gemini adapter supports multimodal messages and base64 image/PDF data URIs. Cloudflare Workers AI image generation is off by default; setting `ENABLE_CLOUDFLARE_IMAGE_AI=true` explicitly opts into Workers AI usage, which may incur charges after free quota.
+The Google Gemini adapter supports multimodal messages and base64 image/PDF data URIs. Cloudflare Workers AI image generation uses the documented FLUX.1 schnell model and is disabled by default; set `ENABLE_CLOUDFLARE_IMAGE_AI=true` to opt in. Text and image gates are independent. Cloudflare currently documents 10,000 Neurons/day at no charge across Workers AI, with paid usage beyond that allocation on Workers Paid; check the dashboard and current pricing because this is an account-wide quota, not a SOHAM billing cap. Image cost depends on tiles and inference steps.

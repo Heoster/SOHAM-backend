@@ -160,7 +160,8 @@ export class RateLimiterService {
     });
 
     this.providerLimits.set('openrouter', { requestsPerMinute: 20, requestsPerDay: 200 });
-    this.providerLimits.set('cloudflare', { requestsPerMinute: 60, requestsPerDay: 10000 });
+    // Conservative process-local request guard; this is not a Neuron or billing cap.
+    this.providerLimits.set('cloudflare', { requestsPerMinute: 15, requestsPerDay: 500 });
 
     // ElevenLabs: Conservative limits (not specified in requirements)
     this.providerLimits.set('elevenlabs', {
