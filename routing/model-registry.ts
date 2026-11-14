@@ -278,12 +278,11 @@ export class ModelRegistry {
 }
 
 // Auto-refresh provider availability every 5 minutes (server-side only)
-if (true) { // always server-side
-  setInterval(() => {
-    const registry = getModelRegistry();
-    registry.refreshProviderAvailability();
-  }, 5 * 60 * 1000);
-}
+const providerAvailabilityRefresh = setInterval(() => {
+  const registry = getModelRegistry();
+  registry.refreshProviderAvailability();
+}, 5 * 60 * 1000);
+providerAvailabilityRefresh.unref();
 
 // Singleton instance
 let registryInstance: ModelRegistry | null = null;

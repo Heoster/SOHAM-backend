@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test:intent": "node -r ts-node/register/transpile-only scripts/eval-intent-detector.ts",
     "test:cloudflare": "node -r ts-node/register/transpile-only scripts/test-cloudflare-ai.ts",
+    "test:auto-router": "node -r ts-node/register/transpile-only scripts/test-auto-router.ts",
     "lint": "eslint . --ext .ts",
     "health": "node dist/server.js --health",
     "prod": "NODE_ENV=production node dist/server.js"
