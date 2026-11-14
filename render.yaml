@@ -32,6 +32,10 @@ services:
         sync: false
       - key: CLOUDFLARE_AI_API_TOKEN
         sync: false
+      - key: ENABLE_CLOUDFLARE_TEXT_AI
+        sync: false
+      - key: ENABLE_CLOUDFLARE_IMAGE_AI
+        sync: false
       - key: CLOUDFLARE_AI_GATEWAY_ID
         sync: false
       - key: SUPABASE_URL

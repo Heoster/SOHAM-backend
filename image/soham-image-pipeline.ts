@@ -62,11 +62,10 @@ export class SOHAMImagePipeline {
   // ─── PROVIDER 1: Cloudflare Workers AI (flux-1-schnell) ───────────────────────
 
   private async tryCloudflare(
-    prompt: string,
-    aspectRatio: string
+    prompt: string
   ): Promise<{ url: string; model: string }> {
     const result = await cfGenerateImage(
-      { prompt, aspect_ratio: aspectRatio, num_steps: 4 },
+      { prompt, steps: 4 },
       '@cf/black-forest-labs/flux-1-schnell'
     );
     return { url: result.imageBase64, model: 'flux-1-schnell' };
@@ -118,7 +117,7 @@ export class SOHAMImagePipeline {
     // 1. Cloudflare Workers AI (primary — fast, high quality)
     if (process.env.ENABLE_CLOUDFLARE_IMAGE_AI === 'true' && process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN) {
       try {
-        const result = await this.tryCloudflare(enhancedPrompt, aspectRatio);
+        const result = await this.tryCloudflare(enhancedPrompt);
         dataUrl = result.url;
         provider = 'cloudflare';
         model = result.model;

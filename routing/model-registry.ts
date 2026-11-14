@@ -25,6 +25,9 @@ function checkProviderApiKey(provider: ProviderConfig): boolean {
   // Groq's model catalog lists Developer-plan token prices. Only enable inference
   // when the operator explicitly confirms this credential belongs to a $0 Free plan.
   if (provider.type === 'groq' && process.env.GROQ_FREE_PLAN_ONLY !== 'true') return false;
+  // Workers AI can consume a shared daily free allocation and may incur charges;
+  // keep text models out of automatic and manual routing until explicitly enabled.
+  if (provider.type === 'cloudflare' && process.env.ENABLE_CLOUDFLARE_TEXT_AI !== 'true') return false;
   
   // In browser environment, we can't check env vars directly
   // This will be checked server-side
@@ -58,6 +61,8 @@ function initializeProviderAvailability(): void {
     providerAvailability.set(provider.type, isAvailable);
     if (!isAvailable && provider.type === 'groq' && process.env.GROQ_FREE_PLAN_ONLY !== 'true') {
       console.warn('⚠️ Groq models are disabled; set GROQ_FREE_PLAN_ONLY=true only for a confirmed $0 Free-plan account.');
+    } else if (!isAvailable && provider.type === 'cloudflare' && process.env.ENABLE_CLOUDFLARE_TEXT_AI !== 'true') {
+      console.info('ℹ️ Cloudflare text models are disabled; set ENABLE_CLOUDFLARE_TEXT_AI=true to opt in to Workers AI usage.');
     } else if (!isAvailable) {
       console.warn(`⚠️ ${provider.apiKeyEnvVar} is not set. Models from ${key} provider will be unavailable.`);
     }
