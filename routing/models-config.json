@@ -34,10 +34,10 @@
       "type": "cloudflare",
       "apiKeyEnvVar": "CLOUDFLARE_AI_API_TOKEN",
       "baseUrl": "https://api.cloudflare.com/client/v4",
-      "enabled": false,
+      "enabled": true,
       "rateLimit": {
-        "requestsPerMinute": 60,
-        "requestsPerDay": 10000
+        "requestsPerMinute": 15,
+        "requestsPerDay": 500
       }
     }
   },
@@ -221,6 +221,58 @@
         "temperature": 0.6,
         "topP": 0.9,
         "maxOutputTokens": 4096
+      },
+      "enabled": true
+    },
+    {
+      "id": "cloudflare-granite-4-micro",
+      "name": "Granite 4.0 H Micro (Cloudflare)",
+      "provider": "cloudflare",
+      "modelId": "@cf/ibm-granite/granite-4.0-h-micro",
+      "category": "general",
+      "description": "Compact Cloudflare Workers AI chat model; explicitly opt-in because Workers AI usage shares account Neuron quota and may be billable.",
+      "contextWindow": 131000,
+      "supportsStreaming": true,
+      "maxOutputTokens": 4096,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "priority": 55,
+      "defaultParams": {
+        "temperature": 0.6,
+        "topP": 0.9,
+        "maxOutputTokens": 2048
+      },
+      "enabled": true
+    },
+    {
+      "id": "cloudflare-gpt-oss-20b",
+      "name": "GPT-OSS 20B (Cloudflare)",
+      "provider": "cloudflare",
+      "modelId": "@cf/openai/gpt-oss-20b",
+      "category": "coding",
+      "description": "Reasoning-capable Cloudflare Workers AI chat model; explicitly opt-in because Workers AI usage shares account Neuron quota and may be billable.",
+      "contextWindow": 128000,
+      "supportsStreaming": true,
+      "maxOutputTokens": 4096,
+      "lifecycle": {
+        "status": "ACTIVE"
+      },
+      "capabilities": [
+        {
+          "type": "TEXT"
+        }
+      ],
+      "priority": 50,
+      "defaultParams": {
+        "temperature": 0.6,
+        "topP": 0.9,
+        "maxOutputTokens": 2048
       },
       "enabled": true
     }

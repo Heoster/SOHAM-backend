@@ -367,8 +367,9 @@ const ALL_ENDPOINTS: EndpointHealth[] = [
   { method: 'POST', path: '/api/ai/dictionary',       category: 'skills',   status: 'registered', description: 'Word definitions, synonyms, etymology' },
   { method: 'POST', path: '/api/ai/fact-check',       category: 'skills',   status: 'registered', description: 'Fact-checking with web search + AI reasoning' },
   // Image
-  { method: 'POST', path: '/api/image/generate',      category: 'image',    status: 'registered', description: 'Image generation: Pollinations, with Cloudflare behind explicit opt-in' },
-  { method: 'POST', path: '/api/image/generate-cf',   category: 'image',    status: 'registered', description: 'Cloudflare Workers AI image generation only' },
+  { method: 'POST', path: '/api/image/generate',      category: 'image',    status: 'registered', description: 'Opt-in Cloudflare Workers AI image generation, with Pollinations fallback' },
+  { method: 'POST', path: '/api/image/generate-cf',   category: 'image',    status: 'registered', description: 'Cloudflare FLUX.1 schnell image generation (explicit opt-in)' },
+  { method: 'GET', path: '/api/image/generate-cf',    category: 'image',    status: 'registered', description: 'Cloudflare image capability/configuration (no generation)' },
   // Voice
   { method: 'POST', path: '/api/voice/tts',           category: 'voice',    status: 'registered', description: 'Browser text-to-speech fallback; provider TTS disabled' },
   { method: 'POST', path: '/api/voice/transcribe',    category: 'voice',    status: 'registered', description: 'Browser speech recognition fallback; provider STT disabled' },
@@ -445,11 +446,19 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       'OpenRouter model gateway',
       'OPENROUTER_API_KEY', 'https://openrouter.ai/keys'
     ),
-    cloudflareAI: {
-      status: 'degraded', configured: false, required: false,
-      description: 'Cloudflare Workers AI text chat is disabled; image generation is separately gated.',
-      keyEnvVar: 'ENABLE_CLOUDFLARE_IMAGE_AI', docsUrl: 'https://dash.cloudflare.com',
-    },
+    cloudflareAI: (() => {
+      const enabled = process.env.ENABLE_CLOUDFLARE_TEXT_AI === 'true';
+      const configured = enabled && Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN);
+      return {
+        status: configured ? 'ok' as const : 'degraded' as const,
+        configured,
+        required: false,
+        description: 'Cloudflare Workers AI chat models; explicit opt-in required because usage shares account quota and can be billable.',
+        keyEnvVar: 'ENABLE_CLOUDFLARE_TEXT_AI + CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_AI_API_TOKEN',
+        docsUrl: 'https://developers.cloudflare.com/workers-ai/',
+        note: configured ? 'Text inference is enabled.' : 'Disabled until ENABLE_CLOUDFLARE_TEXT_AI=true and credentials are configured.',
+      };
+    })(),
   };
 
   let search: Record<string, ProviderHealth> = {
@@ -546,8 +555,8 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
   let image: Record<string, ProviderHealth> = {
     cloudflare: envCheck(
       ['ENABLE_CLOUDFLARE_IMAGE_AI', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_AI_API_TOKEN'], false,
-      'Cloudflare Workers AI image generation (explicit opt-in; may be billable over free quota)',
-      'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_AI_API_TOKEN', 'https://dash.cloudflare.com'
+      'Cloudflare Workers AI FLUX.1 schnell image generation (explicit opt-in; account Neuron quota and billing apply)',
+      'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_AI_API_TOKEN', 'https://developers.cloudflare.com/workers-ai/platform/pricing/'
     ),
     pollinations: {
       status: 'ok', configured: true, required: false,
@@ -566,7 +575,7 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
   if (probeMode) {
     const checks: Array<[Record<string, ProviderHealth>, string, () => Promise<void>]> = [
       [providers, 'groq', probeGroq], [providers, 'google', probeGoogle],
-      [providers, 'openrouter', probeOpenRouter],
+      [providers, 'openrouter', probeOpenRouter], [providers, 'cloudflareAI', probeCloudflare],
       [search, 'you', probeYouCom], [search, 'tavily', probeTavily],
       [search, 'firecrawl', probeFirecrawl], [search, 'gnews', probeGNews], [search, 'newsapi', probeNewsApi],
       [search, 'cricapi', probeCricApi], [search, 'alphaVantage', probeAlphaVantage],

@@ -1,44 +1,61 @@
 /**
- * POST /api/image/generate-cf
- * Cloudflare Workers AI image generation only.
- * Body: { prompt: string, aspect_ratio?: string, num_steps?: number, model?: string }
- * Response: { success, imageUrl, model, provider }
- * GET /api/image/generate-cf → health/capability check
+ * Cloudflare Workers AI image generation (FLUX.1 schnell).
+ * POST /api/image/generate-cf: { prompt: string, steps?: 1..8 }
+ * GET /api/image/generate-cf: non-generative capability/configuration info.
  */
-import type { Request, Response } from "express";
-import { cfGenerateImage } from "../../image/cloudflare-ai";
+import type { Request, Response } from 'express';
+import { cfGenerateImage } from '../../image/cloudflare-ai';
 
-const ALLOWED_MODELS = new Set([
-  "@cf/black-forest-labs/flux-1-schnell",
-  "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-  "@cf/lykon/dreamshaper-8-lcm",
-]);
-const DEFAULT_MODEL = "@cf/black-forest-labs/flux-1-schnell";
+const MODEL = '@cf/black-forest-labs/flux-1-schnell';
+
+function isEnabled(): boolean {
+  return process.env.ENABLE_CLOUDFLARE_IMAGE_AI === 'true'
+    && Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN);
+}
 
 export async function generateImageCFHandler(req: Request, res: Response): Promise<void> {
+  if (!isEnabled()) {
+    res.status(503).json({
+      success: false,
+      error: 'Cloudflare image AI is disabled or not configured. Explicitly enable it with ENABLE_CLOUDFLARE_IMAGE_AI=true.',
+    });
+    return;
+  }
+
+  const prompt = req.body?.prompt;
+  if (typeof prompt !== 'string' || !prompt.trim() || prompt.trim().length > 2048) {
+    res.status(400).json({ success: false, error: 'prompt must contain 1–2048 characters.' });
+    return;
+  }
+  const steps = req.body?.steps ?? 4;
+  if (!Number.isInteger(steps) || steps < 1 || steps > 8) {
+    res.status(400).json({ success: false, error: 'steps must be an integer from 1 to 8.' });
+    return;
+  }
+  if (req.body?.model !== undefined && req.body.model !== MODEL) {
+    res.status(400).json({ success: false, error: `Unsupported Cloudflare image model. Use ${MODEL}.` });
+    return;
+  }
+
   try {
-    if (process.env.ENABLE_CLOUDFLARE_IMAGE_AI !== 'true' || !process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_AI_API_TOKEN) {
-      res.status(503).json({ success: false, error: "Cloudflare image AI is disabled; enabling it is an explicit opt-in to Workers AI usage." });
-      return;
-    }
-    const { prompt, aspect_ratio = "1:1", num_steps = 4, model } = req.body;
-    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
-      res.status(400).json({ success: false, error: "prompt is required." });
-      return;
-    }
-    const requestedModel = typeof model === "string" && ALLOWED_MODELS.has(model) ? model : DEFAULT_MODEL;
-    const result = await cfGenerateImage({ prompt: prompt.trim(), aspect_ratio, num_steps: Math.min(Math.max(num_steps, 1), 8) }, requestedModel);
-    res.json({ success: true, imageUrl: result.imageBase64, model: result.model, provider: "cloudflare" });
+    const result = await cfGenerateImage({ prompt: prompt.trim(), steps }, MODEL);
+    res.json({ success: true, imageUrl: result.imageBase64, model: result.model, provider: 'cloudflare' });
   } catch (error) {
-    res.status(500).json({ success: false, error: error instanceof Error ? error.message : "CF image generation failed" });
+    console.error('[Image] Cloudflare Workers AI failed:', error instanceof Error ? error.message : error);
+    res.status(502).json({
+      success: false,
+      error: 'Cloudflare Workers AI image generation failed. Check the account token, model access, and Workers AI quota.',
+    });
   }
 }
 
 export function generateImageCFHealthHandler(_req: Request, res: Response): void {
   res.json({
-    available: process.env.ENABLE_CLOUDFLARE_IMAGE_AI === 'true' && !!(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_AI_API_TOKEN),
-    provider: "cloudflare-workers-ai",
-    defaultModel: DEFAULT_MODEL,
-    supportedModels: [...ALLOWED_MODELS],
+    available: isEnabled(),
+    provider: 'cloudflare-workers-ai',
+    defaultModel: MODEL,
+    supportedModels: [MODEL],
+    inputs: { prompt: '1–2048 characters', steps: 'integer 1–8, default 4' },
+    billing: 'Workers AI Neurons are account-wide; check the Cloudflare dashboard for current quota and charges.',
   });
 }
