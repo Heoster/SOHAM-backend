@@ -67,7 +67,21 @@ interface HealthReport {
   memory: Record<string, ProviderHealth>;
   image: Record<string, ProviderHealth>;
   voice: Record<string, ProviderHealth>;
-  models: { total: number; available: number; groqFreePlanGate: boolean; entries: Array<{ id: string; provider: string; modelId: string; available: boolean }> };
+  models: {
+    total: number;
+    available: number;
+    groqFreePlanGate: boolean;
+    entries: Array<{
+      id: string;
+      name: string;
+      provider: string;
+      modelId: string;
+      category: string;
+      description: string;
+      supportsStreaming: boolean;
+      available: boolean;
+    }>;
+  };
   endpoints: EndpointHealth[];
 }
 
@@ -599,7 +613,13 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
     available: catalog.length,
     groqFreePlanGate: process.env.GROQ_FREE_PLAN_ONLY === 'true',
     entries: registry.getAllModels().map(model => ({
-      id: model.id, provider: model.provider, modelId: model.modelId,
+      id: model.id,
+      name: model.name,
+      provider: model.provider,
+      modelId: model.modelId,
+      category: model.category,
+      description: model.description,
+      supportsStreaming: model.supportsStreaming,
       available: registry.isModelAvailable(model.id),
     })),
   };

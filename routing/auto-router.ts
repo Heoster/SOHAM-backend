@@ -19,7 +19,10 @@ interface IntentPolicy {
 
 const DEFAULT: IntentPolicy = {
   category: 'general',
-  preferred: ['groq-gpt-oss-20b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'openrouter-free-router'],
+  preferred: [
+    'groq-gpt-oss-20b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'openrouter-free-router',
+    'cloudflare-granite-4-micro', 'cloudflare-gpt-oss-20b',
+  ],
   temperature: 0.7,
   maxOutputTokens: 2048,
 };
@@ -30,13 +33,19 @@ const POLICIES: Partial<Record<IntentType, IntentPolicy>> = {
   IMAGE_GENERATION: DEFAULT,
   CODE_GENERATION: {
     category: 'coding',
-    preferred: ['groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'openrouter-free-router'],
+    preferred: [
+      'groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite',
+      'openrouter-free-router', 'cloudflare-gpt-oss-20b', 'cloudflare-granite-4-micro',
+    ],
     temperature: 0.25,
     maxOutputTokens: 4096,
   },
   EXPLANATION: {
     category: 'general',
-    preferred: ['groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
+    preferred: [
+      'groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite',
+      'openrouter-free-router', 'cloudflare-gpt-oss-20b', 'cloudflare-granite-4-micro',
+    ],
     temperature: 0.55,
     maxOutputTokens: 4096,
   },
@@ -49,7 +58,10 @@ const POLICIES: Partial<Record<IntentType, IntentPolicy>> = {
   DICTIONARY: { ...DEFAULT, temperature: 0.2, maxOutputTokens: 1024 },
   FACT_CHECK: {
     category: 'general',
-    preferred: ['groq-gpt-oss-120b', 'groq-gpt-oss-20b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
+    preferred: [
+      'groq-gpt-oss-120b', 'groq-gpt-oss-20b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite',
+      'openrouter-free-router', 'cloudflare-gpt-oss-20b', 'cloudflare-granite-4-micro',
+    ],
     temperature: 0.15,
     maxOutputTokens: 2048,
   },
@@ -60,12 +72,15 @@ export function resolveAutoRoute(intent: IntentType): AutoRouteResult {
   const registry = getModelRegistry();
   const available = registry.getAvailableModels();
   const preferred = policy.preferred.filter(id => registry.isModelAvailable(id));
-  const categoryModels = registry.getModelsByCategory(policy.category).map(model => model.id);
-  const providerOrder = ['groq', 'google', 'openrouter'];
+  const providerOrder = ['groq', 'google', 'openrouter', 'cloudflare'];
+  const categoryModels = registry.getModelsByCategory(policy.category);
+  const categoryFallback = providerOrder.flatMap(provider =>
+    categoryModels.filter(model => model.provider === provider).map(model => model.id)
+  );
   const providerFallback = providerOrder.flatMap(provider =>
     available.filter(model => model.provider === provider).map(model => model.id)
   );
-  const modelChain = [...new Set([...preferred, ...categoryModels, ...providerFallback])];
+  const modelChain = [...new Set([...preferred, ...categoryFallback, ...providerFallback])];
 
   return {
     modelChain,
