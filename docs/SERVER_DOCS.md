@@ -437,10 +437,6 @@ The system works fine — memory features are silently skipped. No errors.
 
 Cloudflare image generation requires `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AI_API_TOKEN` and `ENABLE_CLOUDFLARE_IMAGE_AI=true`. It is disabled by default because usage beyond the free Neurons allocation may be billable. Pollinations requires no key.
 
-### Perchance Image API (browser-only)
-
-`image/perchance-browser-client.ts` provides a secure browser-side client for Perchance's official iframe + `postMessage` API. Import it from the frontend; it is intentionally not part of `/api/image/generate` because the Perchance API is browser-based. See [PERCHANCE_IMAGE_INTEGRATION.md](./PERCHANCE_IMAGE_INTEGRATION.md) for the integration contract and UI requirements. The backend health report exposes this capability under `image.perchanceBrowser` without probing Perchance.
-
 ### Rate Limiting
 - 10 images per user per day (UTC)
 - Tracked in Supabase (falls back to in-memory if Supabase unavailable)
