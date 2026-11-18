@@ -49,51 +49,9 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 6000
 }
 
 // ─── Embeddings ───────────────────────────────────────────────────────────────
-
-/**
- * Generate a real embedding via Google gemini-embedding-001 (768-dim).
- * Falls back to a deterministic hash-embedding (256-dim) if no API key.
- */
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
-  if (apiKey) {
-    try {
-      const res = await fetchWithTimeout(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: { parts: [{ text: text.slice(0, 2000) }] } }),
-        },
-        8000
-      );
-      if (res.ok) {
-        const data = await res.json() as any;
-        const values: number[] | undefined = data?.embedding?.values;
-        if (Array.isArray(values) && values.length > 0) return values;
-      }
-    } catch {
-      // fall through to hash
-    }
-  }
-  return hashEmbedding(text);
-}
-
-export function hashEmbedding(text: string, dimensions = 256): number[] {
-  const vec = new Array<number>(dimensions).fill(0);
-  const tokens = text.toLowerCase().split(/\s+/).filter(Boolean);
-  for (const token of tokens) {
-    let h = 2166136261;
-    for (let i = 0; i < token.length; i++) {
-      h ^= token.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    vec[h % dimensions] += 1;
-  }
-  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return vec.map(v => v / norm);
-}
-
+// Shared implementation (dimension-pinned, see ./embeddings for the why).
+export { generateEmbedding, hashEmbedding } from './embeddings';
+import { generateEmbedding } from './embeddings';
 // ─── Cross-device history (Supabase) ─────────────────────────────────────────
 
 export async function loadCrossDeviceHistory(userId?: string, limit = 8): Promise<CrossDeviceMessage[]> {

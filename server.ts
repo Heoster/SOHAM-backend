@@ -65,6 +65,7 @@ import {
   storeSuggestionHandler,
 } from './routes/memory/knowledge';
 import { healthHandler, healthLiveHandler, healthReadyHandler } from './routes/health';
+import { uploadSingle, uploadDocumentHandler, listDocumentsHandler, getDocumentHandler, deleteDocumentHandler } from './routes/documents';
 import { translateHandler } from './routes/ai/translate';
 import { sentimentHandler } from './routes/ai/sentiment';
 import { classifyHandler } from './routes/ai/classify';
@@ -247,6 +248,12 @@ app.post('/api/memory/knowledge/search',       searchKnowledgeHandler);
 app.post('/api/memory/knowledge/correction',   storeCorrectionHandler);
 app.post('/api/memory/knowledge/suggestion',   storeSuggestionHandler);
 
+// ── Documents — upload ≤10MB, RAG over user's own files ──────────────────────
+app.post('/api/documents/upload',  withTimeout(uploadSingle,           20_000), withTimeout(uploadDocumentHandler, 180_000));
+app.get('/api/documents',          withTimeout(listDocumentsHandler,   15_000));
+app.get('/api/documents/:id',      withTimeout(getDocumentHandler,     15_000));
+app.delete('/api/documents/:id',   withTimeout(deleteDocumentHandler,  60_000));
+
 // ── 405 Method Not Allowed ────────────────────────────────────────────────────
 // Catches requests to known paths with the wrong HTTP method
 const knownPaths = new Set([
@@ -261,6 +268,7 @@ const knownPaths = new Set([
   '/api/memory/extract', '/api/memory/knowledge',
   '/api/memory/knowledge/search', '/api/memory/knowledge/correction',
   '/api/memory/knowledge/suggestion',
+  '/api/documents', '/api/documents/upload', '/api/documents/:id',
 ]);
 
 app.use((req: Request, res: Response, next: NextFunction) => {

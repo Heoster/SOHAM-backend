@@ -99,6 +99,106 @@ function setCached(key: string, result: YouTubePlayResult): void {
   }
 }
 
+// ─── Conversation reference resolution ("play them", "play the second one") ─────
+
+export interface ConversationTurnLike {
+  role: string;
+  content: string;
+}
+
+export type ReferenceResolution =
+  | { kind: 'direct'; videoId: string; reason: string }
+  | { kind: 'search'; query: string; reason: string };
+
+const ANAPHORIC_RE = /^(the\s+)?(it|this|that|them|these|those|one|ones)(\s+(please|pls|now|abhi))*$|^(the|this|that)\s+(song|video|track|playlist|clip)(\s+(please|pls))?$|^(the\s+)?(first|second|third|fourth|fifth|sixth|seventh|last)(\s+(one|song|video|track|clip))?(\s+(please|pls))?$/i;
+
+const ORDINAL: Record<string, number> = {
+  first: 0, second: 1, third: 2, fourth: 3, fifth: 4, sixth: 5, seventh: 6, last: -1,
+};
+
+/** Extract list items from an assistant message (markdown bullets or bold titles). */
+export function extractListItems(text: string): string[] {
+  const items: string[] = [];
+  for (const line of text.split('\n')) {
+    const bullet = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/);
+    if (bullet) {
+      const item = bullet[1]
+        .replace(/\*\*/g, '')
+        .replace(/\s+[\u2013\u2014-]\s+.*$/, '')   // drop trailing description after " – "
+        .replace(/^[#> ]+/g, '')
+        .trim();
+      if (item.length >= 2) items.push(item.slice(0, 120));
+    }
+  }
+  if (items.length === 0) {
+    for (const line of text.split('\n')) {
+      const bold = line.match(/\*\*([^*]{2,80})\*\*/);
+      if (bold) items.push(bold[1].trim());
+    }
+  }
+  return items;
+}
+
+/**
+ * Resolve a play request that refers back to the conversation.
+ *   "play it"        → the YouTube URL the assistant just showed (exact video)
+ *   "play them"      → first list item from the assistant's last reply (e.g. a song)
+ *   "play the 2nd one" → that item in the list
+ *   fallback          → most recent user topic with search verbs stripped
+ * Returns { kind: 'direct' } for an exact video reference, else { kind: 'search' }.
+ */
+export function resolveReferencedQuery(
+  query: string,
+  history: ConversationTurnLike[] = [],
+): ReferenceResolution {
+  const trimmed = query
+    .trim()
+    .replace(/^(play|put on|hear|listen to)\s+/i, '')   // tolerate a leading play-verb
+    .trim();
+  if (!ANAPHORIC_RE.test(trimmed)) {
+    return { kind: 'search', query: trimmed, reason: 'explicit query' };
+  }
+
+  const ordinalMatch = trimmed.toLowerCase().match(/\b(first|second|third|fourth|fifth|sixth|seventh|last)\b/);
+  const wantedIndex = ordinalMatch ? ORDINAL[ordinalMatch[1]] : 0;
+
+  const lastAssistant = [...history].reverse().find(turn => turn.role !== 'user' && turn.content.trim());
+  if (lastAssistant) {
+    const items = extractListItems(lastAssistant.content);
+    // 1) explicit ordinal ("the second one") + a list → honour the ordinal
+    if (ordinalMatch && items.length > 0) {
+      const index = wantedIndex === -1 ? items.length - 1 : Math.min(Math.max(wantedIndex, 0), items.length - 1);
+      return { kind: 'search', query: items[index], reason: `item ${index + 1} from the assistant's list` };
+    }
+    // 2) exact YouTube URL the assistant just referenced → play that video
+    const urlMatch = lastAssistant.content.match(
+      /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/,
+    );
+    if (urlMatch) {
+      return { kind: 'direct', videoId: urlMatch[1], reason: 'video the assistant referenced' };
+    }
+    // 3) otherwise pick from the list the assistant just gave
+    if (items.length > 0) {
+      const index = wantedIndex === -1 ? items.length - 1 : Math.min(Math.max(wantedIndex, 0), items.length - 1);
+      return { kind: 'search', query: items[index], reason: `item ${index + 1} from the assistant's list` };
+    }
+  }
+
+  // 3) most recent user topic (search verbs stripped)
+  for (let i = history.length - 1; i >= 0; i--) {
+    const turn = history[i];
+    if (turn.role !== 'user') continue;
+    const cleaned = stripInjectedContext(turn.content)
+      .replace(/^(search for|search|find|show me|give me|tell me|list|find me|look up)\s+(some|me|the|top|a)?\s*/i, '')
+      .trim();
+    if (cleaned.length >= 2 && !ANAPHORIC_RE.test(cleaned)) {
+      return { kind: 'search', query: cleaned, reason: 'most recent user topic' };
+    }
+  }
+
+  return { kind: 'search', query: trimmed, reason: 'anaphora unresolved — using raw query' };
+}
+
 // ─── Query sanitizing / command extraction ────────────────────────────────────
 
 /** Strip control chars, collapse whitespace, cap length. Keeps the query search-friendly. */

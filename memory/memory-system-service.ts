@@ -41,6 +41,8 @@
  *   - Graceful degradation when Supabase is not configured
  */
 
+import { generateEmbedding, hashEmbedding } from './embeddings';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type MemoryCategory =
@@ -164,20 +166,6 @@ function rowToEntry(row: MemoryRow): MemoryEntry {
 
 // ─── Fallback hash-embedding (no API key needed) ──────────────────────────────
 
-function hashEmbedding(text: string, dimensions = 512): number[] {
-  const vec = new Array<number>(dimensions).fill(0);
-  const tokens = text.toLowerCase().split(/\s+/).filter(Boolean);
-  for (const token of tokens) {
-    let h = 2166136261;
-    for (let i = 0; i < token.length; i++) {
-      h ^= token.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    vec[h % dimensions] += 1;
-  }
-  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return vec.map(v => v / norm);
-}
 
 // ─── Memory System Service ────────────────────────────────────────────────────
 
@@ -369,38 +357,12 @@ export class MemorySystemService {
   // ── Embeddings ─────────────────────────────────────────────────────────────
 
   /**
-   * Generate embedding via Google gemini-embedding-001.
-   * Falls back to a deterministic hash-embedding if the API key is missing.
+   * Generate embedding via Google gemini-embedding-001 (dimension pinned to the
+   * Upstash index — see ./embeddings). Falls back to a deterministic
+   * hash-embedding at that same dimension if Google is unreachable.
    */
   async generateEmbedding(text: string): Promise<number[]> {
-    const apiKey = process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY;
-
-    if (!apiKey) {
-      // Graceful fallback — no crash, just lower quality similarity
-      return hashEmbedding(text);
-    }
-
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: { parts: [{ text }] } }),
-          signal: AbortSignal.timeout(8000),
-        }
-      );
-
-      if (!res.ok) {
-        console.warn(`[MemorySystem] Embedding API error ${res.status} — using hash fallback`);
-        return hashEmbedding(text);
-      }
-
-      const data = await res.json() as any;
-      return data?.embedding?.values ?? hashEmbedding(text);
-    } catch {
-      return hashEmbedding(text);
-    }
+    return generateEmbedding(text);
   }
 
   /**

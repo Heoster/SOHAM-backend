@@ -30,44 +30,9 @@ function isUpstashReady(): boolean {
 }
 
 // ─── Embedding ────────────────────────────────────────────────────────────────
-
-/** Deterministic 512-dim hash embedding — used when Google API is unavailable */
-function hashEmbed(text: string, dim = 512): number[] {
-  const vec = new Float32Array(dim);
-  const tokens = text.toLowerCase().split(/\W+/).filter(Boolean);
-  for (const tok of tokens) {
-    let h = 2166136261 >>> 0;
-    for (let i = 0; i < tok.length; i++) {
-      h ^= tok.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-    vec[h % dim] += 1;
-  }
-  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return Array.from(vec).map(v => v / norm);
-}
-
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const key = process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!key) return hashEmbed(text);
-
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${key}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: { parts: [{ text: text.slice(0, 2000) }] } }),
-        signal: AbortSignal.timeout(8000),
-      }
-    );
-    if (!res.ok) return hashEmbed(text);
-    const data = await res.json() as any;
-    return data?.embedding?.values ?? hashEmbed(text);
-  } catch {
-    return hashEmbed(text);
-  }
-}
+// Shared implementation (dimension-pinned, see ./embeddings for the why).
+export { generateEmbedding, hashEmbedding } from './embeddings';
+import { generateEmbedding } from './embeddings';
 
 // ─── Upstash Vector helpers ───────────────────────────────────────────────────
 

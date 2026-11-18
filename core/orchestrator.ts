@@ -11,6 +11,7 @@
  *   LAYER 4 — SHORT-TERM HISTORY   (Supabase chat_history — cross-device)
  *   LAYER 5 — SEMANTIC RAG         (Upstash Vector — private namespace)
  *   LAYER 6 — PUBLIC KNOWLEDGE     (Upstash Vector — public namespace)
+ *   LAYER 7 — UPLOADED DOCUMENTS   (Document RAG — user's own files, namespace "docs")
  *
  * Resilience: every layer is fetched independently via Promise.allSettled.
  * A single failing layer (e.g. Supabase down) degrades gracefully — the
@@ -42,6 +43,7 @@ import {
   getRealtimeContext,
 } from '../memory/realtime-knowledge-service';
 import { triggerAutoLearn } from '../memory/rag-auto-learn';
+import { searchDocuments } from '../memory/document-rag';
 import { analyzeQuery } from '../tools/search-engine';
 import { logger } from '../utils/logger';
 
@@ -51,7 +53,7 @@ import { logger } from '../utils/logger';
 const MAX_CONTEXT_CHARS = 96_000;
 
 /** Max chars per individual context block to prevent one layer dominating */
-const MAX_BLOCK_CHARS = 2_000;
+const MAX_BLOCK_CHARS = 4_000;   // web_search blocks now carry full page content of top results
 
 export interface SohamContextResult {
   prompt: string;
@@ -65,6 +67,8 @@ export interface SohamContextResult {
   currentDateTime: string;
   /** Which layers failed (for observability) */
   degradedLayers: string[];
+  /** How many document chunks were injected (Uploaded documents layer) */
+  documentRagCount: number;
 }
 
 // ─── Long-term memory retrieval ───────────────────────────────────────────────
@@ -129,10 +133,17 @@ export async function buildSohamPromptContext(input: {
   history?: MessageData[];
   userId?: string;
 }): Promise<SohamContextResult> {
-  const { message, userId } = input;
+  const { message, userId, history } = input;
   // The frontend appends a SOHAM_CLOCK block to `message`. The MODEL keeps it
   // (it needs the time), but analysis/tools/RAG must see only what the user said.
   const userMessage = stripInjectedContext(message) || message;
+  // Tools get the plain-text history (content can be a multimodal array type)
+  const historyForTools = (history ?? []).map(turn => ({
+    role: turn.role,
+    content: typeof turn.content === 'string'
+      ? turn.content
+      : (turn.content ?? []).map(part => part?.text ?? '').join(' '),
+  }));
   const degradedLayers: string[] = [];
 
   const profileService   = getUserProfileService();
@@ -160,8 +171,9 @@ export async function buildSohamPromptContext(input: {
     userProfile$,
     publicKnowledge$,
     realtimeCtx$,
+    documentHits$,
   ] = await Promise.allSettled([
-    executeSohamTool(userMessage),
+    executeSohamTool(userMessage, historyForTools),
     queryRagContext(userId, userMessage, 5),
     loadCrossDeviceHistory(userId, 6),
     searchLongTermMemories(userId, userMessage),
@@ -170,6 +182,7 @@ export async function buildSohamPromptContext(input: {
     needsRealtime
       ? getRealtimeContext(userMessage, realtimeQueryType as any)
       : Promise.resolve({ datetime: getCurrentDateTimeContext(), liveData: undefined }),
+    searchDocuments(userId, userMessage, 4),
   ]);
 
   // Realworld cache — fast Upstash read, no external API
@@ -185,6 +198,7 @@ export async function buildSohamPromptContext(input: {
   const realtimeCtx       = settled(realtimeCtx$,
     { datetime: getCurrentDateTimeContext(), liveData: undefined },
     'realtime', degradedLayers);
+  const documentHits      = settled(documentHits$,    [],    'documents',    degradedLayers);
 
   const toolsUsed = toolResult ? [toolResult] : [];
   const contextBlocks: string[] = [];
@@ -252,6 +266,17 @@ export async function buildSohamPromptContext(input: {
     contextBlocks.push(`Verified knowledge:\n${cap(knowledgeText, MAX_BLOCK_CHARS)}`);
   }
 
+  // ── LAYER 7: Uploaded documents (Document RAG) ────────────────────────────
+  if (documentHits.length > 0) {
+    const docText = documentHits
+      .map((h, i) => `[${i + 1}] ${h.docName} — chunk ${h.chunkIndex + 1} (score ${h.similarity.toFixed(2)})\n${cap(h.text, 900)}`)
+      .join('\n\n');
+    contextBlocks.push(
+      `Relevant parts of the user's uploaded documents:\n${cap(docText, 3_000)}\n` +
+      `Prefer these excerpts when answering questions about the user's documents; cite them as [doc: <name>].`
+    );
+  }
+
   // ── Assemble prompt with context size guard ───────────────────────────────
   // The frontend's clock block ends with "Answer every question about the time…
   // Never guess it." — neutralize that imperative in the model prompt (clock
@@ -288,6 +313,7 @@ export async function buildSohamPromptContext(input: {
     realtimeContextCount:    allRealtimeContent.length,
     currentDateTime:         realtimeCtx.datetime.utc,
     degradedLayers,
+    documentRagCount:        documentHits.length,
   };
 }
 
