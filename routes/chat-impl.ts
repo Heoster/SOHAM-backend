@@ -14,6 +14,7 @@ import type { Request, Response } from 'express';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync, triggerAutoLearnAsync } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
+import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
 import { stripInjectedContext } from '../utils/clean-message';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
@@ -56,15 +57,32 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     // memory writes. The model prompt keeps it (it needs the time).
     const userMessage = stripInjectedContext(message) || message;
 
-    // ── Intent detection ────────────────────────────────────────────────────
+    // ── Intent detection (regex — deterministic fallback) ───────────────────
     const intentDetector = getIntentDetector();
     const intent = intentDetector.detect(userMessage, convertedHistory);
 
-    if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6) {
+    // ── Model-driven plan (SOHAM agent) with regex fallback ─────────────────
+    const agentDisabled = isSohamAgentDisabled();
+    const agentPlan = agentDisabled ? null : await planToolCalls(userMessage, convertedHistory).catch(() => null);
+    const planImage = agentPlan?.tools.find(t => t.tool === 'image_generate');
+    const planChart = agentPlan?.tools.find(t => t.tool === 'chart');
+    // Short-circuits are for single-purpose plans only (or no plan + regex).
+    // A chart/image inside a MIXED plan runs inline via the agent and its
+    // payload travels with the response (imageUrl / imageProvider below).
+    const planImageOnly = Boolean(agentPlan && agentPlan.tools.length > 0 && agentPlan.tools.every(t => t.tool === 'image_generate'));
+    const planChartOnly = Boolean(agentPlan && agentPlan.tools.length > 0 && agentPlan.tools.every(t => t.tool === 'chart'));
+    const imageFromRegex = !agentPlan && intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6;
+    const chartFromRegex = !agentPlan && intent.intent === 'CHART_GENERATION' && intent.confidence > 0.6;
+    const imageWanted = planImageOnly || imageFromRegex;
+    const chartWanted = !imageWanted && (planChartOnly || chartFromRegex);
+    const imagePrompt = planImage?.query || intent.extractedQuery || userMessage;
+    const chartPrompt = planChart?.query || intent.extractedQuery || userMessage;
+
+    if (imageWanted) {
       try {
         const pipeline = getSOHAMPipeline();
         const imageResult = await pipeline.generate({
-          userPrompt: intent.extractedQuery || userMessage,
+          userPrompt: imagePrompt,
           userId: userId || 'anonymous',
         });
 
@@ -87,11 +105,11 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     }
 
     // ── Chart generation (deterministic SVG — never the diffusion pipeline) ──
-    if (intent.intent === 'CHART_GENERATION' && intent.confidence > 0.6) {
+    if (chartWanted) {
       try {
         const { runChartPipeline } = await import('../flows/chart');
         const chart = await runChartPipeline({
-          query: intent.extractedQuery || userMessage,
+          query: chartPrompt,
           preferredModel: typeof settings.model === 'string' && settings.model !== 'auto' ? settings.model : undefined,
         });
 
@@ -118,7 +136,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
 
     // ── Build system prompt + orchestrated context ──────────────────────────
     const systemPrompt = buildSystemPrompt(settings.tone || 'helpful', settings.technicalLevel || 'intermediate');
-    const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });
+    const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId, agentPlan });
 
     // ── Routing ─────────────────────────────────────────────────────────────
     // In Auto mode: resolve the best model per intent.
@@ -159,7 +177,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       assistantMessage: result.response.text,
       metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed },
     }).catch(() => {});
-    extractLongTermMemoriesAsync(userId, userMessage, result.response.text);
+    if (agentContext.agentMemoryExtract !== false) extractLongTermMemoriesAsync(userId, userMessage, result.response.text);
     triggerAutoLearnAsync({
       userMessage,
       assistantMessage: result.response.text,
@@ -168,12 +186,35 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       previousAssistantMessage: history.length > 0 ? history[history.length - 1]?.content : undefined,
     });
 
+    // A chart that was part of a mixed plan (chart + other tools) rides this
+    // same response — the SVG goes out as imageUrl/imageProvider so the client
+    // can render it exactly like a generated chart.
+    const mixedChart = agentContext.toolsUsed.find((t: any) => t?.chart)?.chart;
+
+    // Same for a mixed plan carrying image_generate — render now and attach it.
+    const imageAsk = agentContext.toolsUsed.find((t: any) => t?.tool === 'image_generate' && t.ok);
+    let mixedImage: { url: string; provider: string } | undefined;
+    if (imageAsk) {
+      try {
+        const pipeline = getSOHAMPipeline();
+        const imageResult = await pipeline.generate({
+          userPrompt: imageAsk.query || userMessage,
+          userId: userId || 'anonymous',
+        });
+        mixedImage = { url: imageResult.url, provider: imageResult.provider };
+      } catch (imageError) {
+        console.warn('[Chat] Mixed-plan image generation failed:', imageError instanceof Error ? imageError.message : imageError);
+      }
+    }
+
     res.json({
       success: true,
       content: result.response.text,
       modelUsed: result.modelUsed,
       autoRouted: result.fallbackTriggered,
       toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' }))],
+      ...(mixedChart ? { imageUrl: mixedChart.imageDataUri, imageProvider: 'soham-chart' } : {}),
+      ...(mixedImage ? { imageUrl: mixedImage.url, imageProvider: mixedImage.provider } : {}),
       currentDateTime: agentContext.currentDateTime,
       responseTime: `${Date.now() - startTime}ms`,
       timestamp: new Date().toISOString(),

@@ -22,7 +22,8 @@
  */
 
 import type { MessageData } from '../adapters/types';
-import { executeSohamTool, type SohamToolResult } from '../tools/agent-tools';
+import { type SohamToolResult } from '../tools/agent-tools';
+import { runSohamAgent, type AgentPlan } from './soham-agent';
 import { stripInjectedContext, scopeInjectedClockInstructions } from '../utils/clean-message';
 import {
   loadCrossDeviceHistory,
@@ -69,6 +70,12 @@ export interface SohamContextResult {
   degradedLayers: string[];
   /** How many document chunks were injected (Uploaded documents layer) */
   documentRagCount: number;
+  /** 'model' when the agent planned the tools, 'fallback' when the regex path was used */
+  agentPlannedBy: 'model' | 'fallback';
+  /** Tools the planner chose this turn */
+  agentTools: string[];
+  /** false when the planner judged the turn has nothing durable to remember */
+  agentMemoryExtract: boolean;
 }
 
 // ─── Long-term memory retrieval ───────────────────────────────────────────────
@@ -132,6 +139,8 @@ export async function buildSohamPromptContext(input: {
   message: string;
   history?: MessageData[];
   userId?: string;
+  /** Pre-planned by the caller (chat routes plan once for short-circuits) */
+  agentPlan?: AgentPlan | null;
 }): Promise<SohamContextResult> {
   const { message, userId, history } = input;
   // The frontend appends a SOHAM_CLOCK block to `message`. The MODEL keeps it
@@ -164,7 +173,7 @@ export async function buildSohamPromptContext(input: {
 
   // ── Parallel fetch all layers — allSettled so one failure doesn't kill all ─
   const [
-    toolResult$,
+    agentRun$,
     ragSnippets$,
     crossDeviceHistory$,
     longTermMemories$,
@@ -173,7 +182,7 @@ export async function buildSohamPromptContext(input: {
     realtimeCtx$,
     documentHits$,
   ] = await Promise.allSettled([
-    executeSohamTool(userMessage, historyForTools),
+    runSohamAgent(userMessage, historyForTools, { plan: input.agentPlan, userId }),
     queryRagContext(userId, userMessage, 5),
     loadCrossDeviceHistory(userId, 6),
     searchLongTermMemories(userId, userMessage),
@@ -189,7 +198,9 @@ export async function buildSohamPromptContext(input: {
   const realtimeChunks = await queryRealtimeChunks(message, 3).catch(() => [] as string[]);
 
   // Unwrap results with graceful degradation
-  const toolResult        = settled(toolResult$,        null,  'tool',         degradedLayers);
+  const agentRun          = settled(agentRun$,
+    { results: [], plannedBy: 'fallback' as const, plannedTools: [], memoryExtract: true },
+    'agent', degradedLayers);
   const ragSnippets       = settled(ragSnippets$,       [],    'rag',          degradedLayers);
   const crossDeviceHistory = settled(crossDeviceHistory$, [], 'cross-device', degradedLayers);
   const longTermMemories  = settled(longTermMemories$,  [],    'long-term',    degradedLayers);
@@ -200,7 +211,7 @@ export async function buildSohamPromptContext(input: {
     'realtime', degradedLayers);
   const documentHits      = settled(documentHits$,    [],    'documents',    degradedLayers);
 
-  const toolsUsed = toolResult ? [toolResult] : [];
+  const toolsUsed = agentRun.results;
   const contextBlocks: string[] = [];
 
   // ── LAYER 0b: Live data ───────────────────────────────────────────────────
@@ -219,10 +230,10 @@ export async function buildSohamPromptContext(input: {
     );
   }
 
-  // ── LAYER 1: Tool results ─────────────────────────────────────────────────
-  if (toolResult) {
+  // ── LAYER 1: Tool results (model-planned, possibly several) ───────────────
+  for (const toolResult of toolsUsed) {
     contextBlocks.push(
-      `${toolResult.ok ? 'Current data' : 'Data lookup'}:\n` +
+      `${toolResult.ok ? 'Current data' : 'Data lookup'}${toolsUsed.length > 1 ? ` (${toolResult.tool})` : ''}:\n` +
       cap(toolResult.output, MAX_BLOCK_CHARS)
     );
   }
@@ -314,6 +325,9 @@ export async function buildSohamPromptContext(input: {
     currentDateTime:         realtimeCtx.datetime.utc,
     degradedLayers,
     documentRagCount:        documentHits.length,
+    agentPlannedBy:          agentRun.plannedBy,
+    agentTools:              agentRun.plannedTools,
+    agentMemoryExtract:      agentRun.memoryExtract,
   };
 }
 

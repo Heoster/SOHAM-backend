@@ -1,5 +1,6 @@
 import { formatResultsForAI, searchDuckDuckGo } from './duckduckgo';
 import { extractPlayQuery, resolveReferencedQuery, type ConversationTurnLike } from './youtube-play';
+export type { ConversationTurnLike };
 import { stripInjectedContext } from '../utils/clean-message';
 
 export type SohamToolName =
@@ -16,7 +17,12 @@ export type SohamToolName =
   | 'joke'
   | 'dictionary'
   | 'fact_check'
-  | 'play_video';
+  | 'play_video'
+  | 'web_read'
+  | 'wikipedia'
+  | 'chart'
+  | 'image_generate'
+  | 'summarize';
 
 export interface SohamToolResult {
   tool: SohamToolName;
@@ -30,6 +36,8 @@ export interface SohamToolResult {
   embedUrl?: string;
   /** Structured video payload for a custom player */
   video?: { videoId: string; title: string; channel?: string; thumbnailUrl?: string };
+  /** Deterministic SVG chart payload (chart tool / chart short-circuit) */
+  chart?: { title: string; tableMarkdown: string; imageDataUri: string; note?: string };
 }
 
 interface ToolIntent {
@@ -655,45 +663,135 @@ async function playVideoTool(query: string, history: ConversationTurnLike[] = []
   }
 }
 
+// ─── Web read — fetch a specific page the user is talking about ───────────────
+async function webReadTool(query: string, history: ConversationTurnLike[] = []): Promise<SohamToolResult> {
+  let url = (query.match(/https?:\/\/[^\s)<>\]]+/i) ?? [])[0];
+  if (!url) {
+    // Fall back to the most recent URL in the conversation
+    for (let i = history.length - 1; i >= 0 && !url; i--) {
+      url = (history[i].content.match(/https?:\/\/[^\s)<>\]]+/i) ?? [])[0];
+    }
+  }
+  if (!url) {
+    return { tool: 'web_read', query, ok: false, output: 'No URL found. Pass the page URL to read (e.g. "summarize https://example.com/article").' };
+  }
+  const { readWebPage } = await import('./page-reader');
+  const page = await readWebPage(url, 1800);
+  if (!page.text) {
+    return { tool: 'web_read', query: url, ok: false, output: `Could not read ${url} — the page is unreachable or blocked. Never invent its contents.`, sources: [{ title: url, url }] };
+  }
+  return {
+    tool: 'web_read',
+    query: url,
+    ok: true,
+    output:
+      `Full page content of ${url} (via ${page.via ?? 'jina'} — this is the REAL page text):\n\n${page.text}`,
+    sources: [{ title: url, url }],
+  };
+}
+
+// ─── Wikipedia — encyclopedic lookups ─────────────────────────────────────────
+async function wikipediaTool(query: string): Promise<SohamToolResult> {
+  const { lookupWikipedia } = await import('./wikipedia');
+  const result = await lookupWikipedia(sanitizeQuery(query));
+  if (!result.ok) {
+    return { tool: 'wikipedia', query, ok: false, output: result.error ?? 'Wikipedia lookup failed.' };
+  }
+  return {
+    tool: 'wikipedia',
+    query,
+    ok: true,
+    output:
+      `**${result.title}** (Wikipedia — verified article extract)\n${result.extract}\n\n` +
+      `Source: ${result.url}`,
+    sources: [{ title: result.title ?? query, url: result.url! }],
+  };
+}
+
+// ─── Chart — deterministic SVG from real/model-validated numbers ─────────────
+async function chartTool(query: string): Promise<SohamToolResult> {
+  try {
+    const { runChartPipeline } = await import('../flows/chart');
+    const chart = await runChartPipeline({ query });
+    const noteSuffix = chart.note ? `\n\n_${chart.note}_` : '';
+    return {
+      tool: 'chart',
+      query,
+      ok: true,
+      output: `**${chart.title}**\n\n${chart.tableMarkdown}${noteSuffix}`,
+      chart: { title: chart.title, tableMarkdown: chart.tableMarkdown, imageDataUri: chart.imageDataUri, note: chart.note },
+    };
+  } catch (err) {
+    return { tool: 'chart', query, ok: false, output: `Chart generation failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+// ─── Image generation — sentinel (callers short-circuit to the image pipeline) ─
+function imageGenerateSentinel(query: string): SohamToolResult {
+  return {
+    tool: 'image_generate',
+    query,
+    ok: true,
+    output: '[IMAGE_REQUESTED] The image is being rendered separately by the image pipeline — acknowledge the request briefly in your reply, do not describe or invent the image.',
+  };
+}
+
+// ─── Summarize — text or conversation excerpt ─────────────────────────────────
+async function summarizeTool(query: string): Promise<SohamToolResult> {
+  try {
+    const { enhancedSummarize } = await import('../flows/enhanced-summarize');
+    const text = query.trim();
+    if (text.length < 40) {
+      return { tool: 'summarize', query, ok: false, output: 'Nothing to summarize — provide the text (or a URL/document) first.' };
+    }
+    const result = await enhancedSummarize({ text: text.slice(0, 8000), style: 'detailed' });
+    return { tool: 'summarize', query, ok: true, output: result.summary ?? String(result).slice(0, 2000) };
+  } catch (err) {
+    return { tool: 'summarize', query, ok: false, output: `Summarize failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * Dispatch by tool name — shared by the regex intent detector and the
+ * model-driven agent planner. Never throws: every failure becomes an
+ * ok:false result the model can reason about.
+ */
+export async function runToolByName(
+  tool: SohamToolName,
+  query: string,
+  history: ConversationTurnLike[] = [],
+): Promise<SohamToolResult> {
+  switch (tool) {
+    case 'news_search':     return newsSearch(sanitizeQuery(query));
+    case 'weather_search':  return weatherSearch(sanitizeQuery(query));
+    case 'sports_search':   return sportsSearch(sanitizeQuery(query));
+    case 'finance_search':  return financeSearch(sanitizeQuery(query));
+    case 'web_search':      return webSearch(query);
+    case 'play_video':      return playVideoTool(query, history);
+    case 'translate':       return translateTool(sanitizeQuery(query));
+    case 'sentiment':       return sentimentTool(sanitizeQuery(query));
+    case 'grammar':         return grammarTool(sanitizeQuery(query));
+    case 'quiz':            return quizTool(sanitizeQuery(query));
+    case 'recipe':          return recipeTool(sanitizeQuery(query));
+    case 'joke':            return jokeTool(sanitizeQuery(query));
+    case 'dictionary':      return dictionaryTool(sanitizeQuery(query));
+    case 'fact_check':      return factCheckTool(sanitizeQuery(query));
+    case 'web_read':        return webReadTool(query, history);
+    case 'wikipedia':       return wikipediaTool(query);
+    case 'chart':           return chartTool(query);
+    case 'summarize':       return summarizeTool(query);
+    case 'image_generate':  return imageGenerateSentinel(query);
+    default: return { tool, query, ok: false, output: `Unknown tool: ${tool}` };
+  }
+}
+
 export async function executeSohamTool(
   message: string,
   history: ConversationTurnLike[] = [],
 ): Promise<SohamToolResult | null> {
   const intent = detectToolIntent(message);
   if (!intent) return null;
-
-  switch (intent.tool) {
-    case 'news_search':
-      return newsSearch(intent.query);
-    case 'weather_search':
-      return weatherSearch(intent.query);
-    case 'sports_search':
-      return sportsSearch(intent.query);
-    case 'finance_search':
-      return financeSearch(intent.query);
-    case 'web_search':
-      return webSearch(intent.query);
-    case 'play_video':
-      return playVideoTool(intent.query, history);
-    case 'translate':
-      return translateTool(intent.query);
-    case 'sentiment':
-      return sentimentTool(intent.query);
-    case 'grammar':
-      return grammarTool(intent.query);
-    case 'quiz':
-      return quizTool(intent.query);
-    case 'recipe':
-      return recipeTool(intent.query);
-    case 'joke':
-      return jokeTool(intent.query);
-    case 'dictionary':
-      return dictionaryTool(intent.query);
-    case 'fact_check':
-      return factCheckTool(intent.query);
-    default:
-      return null;
-  }
+  return runToolByName(intent.tool, intent.query, history);
 }
 
 // ─── New Skill Tool Wrappers ──────────────────────────────────────────────────
