@@ -86,6 +86,36 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       }
     }
 
+    // ── Chart generation (deterministic SVG — never the diffusion pipeline) ──
+    if (intent.intent === 'CHART_GENERATION' && intent.confidence > 0.6) {
+      try {
+        const { runChartPipeline } = await import('../flows/chart');
+        const chart = await runChartPipeline({
+          query: intent.extractedQuery || userMessage,
+          preferredModel: typeof settings.model === 'string' && settings.model !== 'auto' ? settings.model : undefined,
+        });
+
+        const noteSuffix = chart.note ? `\n\n_${chart.note}_` : '';
+        const content = `**${chart.title}**\n\n${chart.tableMarkdown}${noteSuffix}`;
+
+        persistSohamMemory({ userId, userMessage, assistantMessage: `[Chart generated: ${chart.title}]\n\n${chart.tableMarkdown}` }).catch(() => {});
+
+        res.json({
+          success: true,
+          content,
+          modelUsed: chart.modelUsed ? `chart/${chart.modelUsed}` : 'chart/soham-svg',
+          autoRouted: false,
+          imageUrl: chart.imageDataUri,
+          imageProvider: 'soham-chart',
+          responseTime: `${Date.now() - startTime}ms`,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      } catch (chartError) {
+        console.warn('[Chat] Chart pipeline failed, falling back to text:', chartError instanceof Error ? chartError.message : chartError);
+      }
+    }
+
     // ── Build system prompt + orchestrated context ──────────────────────────
     const systemPrompt = buildSystemPrompt(settings.tone || 'helpful', settings.technicalLevel || 'intermediate');
     const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });

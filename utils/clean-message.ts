@@ -17,6 +17,22 @@
  * Always run this before analysis/routing/tools — but pass the ORIGINAL
  * message to the model prompt, which legitimately needs the clock.
  */
+/**
+ * The frontend clock block ends with an imperative:
+ *   "Answer every question about the current time, date or day from this clock. Never guess it."
+ * phrased as an instruction to ALWAYS surface the time. That leaks time/date
+ * into answers where nobody asked. Rewrite the directive to a strict scope
+ * while keeping the clock values — the model still knows the time when asked,
+ * but nothing tells it to talk about it unprompted.
+ */
+export function scopeInjectedClockInstructions(message: string): string {
+  if (!message) return message;
+  return message.replace(
+    /Answer every question about the current time, date or day from this clock\.?([ \t]*Never guess it\.?)?/gi,
+    'Use this clock only when the user explicitly asks about the time, date, or day, or the task genuinely requires it. Never volunteer or restate the current time or date unprompted.',
+  );
+}
+
 export function stripInjectedContext(message: string): string {
   let m = (message ?? '').replace(/\r\n?/g, '\n');
 

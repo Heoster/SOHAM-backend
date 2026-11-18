@@ -129,6 +129,36 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       }
     }
 
+    // ── Chart generation (deterministic SVG — never the diffusion pipeline) ──
+    if (intent.intent === 'CHART_GENERATION' && intent.confidence > 0.6) {
+      sseWrite(res, { type: 'status', text: 'Drawing chart…' });
+      try {
+        const { runChartPipeline } = await import('../flows/chart');
+        const chart = await runChartPipeline({
+          query: intent.extractedQuery || userMessage,
+          preferredModel: typeof settings.model === 'string' && settings.model !== 'auto' ? settings.model : undefined,
+        });
+
+        const noteSuffix = chart.note ? `\n\n_${chart.note}_` : '';
+        const content = `**${chart.title}**\n\n${chart.tableMarkdown}${noteSuffix}`;
+
+        // Stream the table as one token chunk so the markdown renders, then the
+        // SVG as an image event — same rendering path as image generation.
+        sseWrite(res, { type: 'token', text: content });
+        sseWrite(res, { type: 'image', url: chart.imageDataUri, provider: 'soham-chart', text: chart.title });
+        sseWrite(res, { type: 'done', modelUsed: chart.modelUsed ? `chart/${chart.modelUsed}` : 'chart/soham-svg', autoRouted: false, responseTime: `${Date.now() - startTime}ms` });
+
+        persistSohamMemory({ userId, userMessage, assistantMessage: `[Chart generated: ${chart.title}]\n\n${chart.tableMarkdown}` }).catch(() => {});
+        sseEnd(res);
+        return;
+      } catch (chartError) {
+        logger.warn('[Stream] Chart pipeline failed, falling back to text', {
+          error: chartError instanceof Error ? chartError.message : String(chartError),
+        });
+        // fall through to text generation
+      }
+    }
+
     // ── Build context ────────────────────────────────────────────────────────
     sseWrite(res, { type: 'status', text: 'Thinking…' });
 

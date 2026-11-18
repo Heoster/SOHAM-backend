@@ -76,7 +76,7 @@ export function getCurrentDateTimeContext(timezone?: string): DateTimeContext {
 }
 
 export function buildDateTimePromptLine(ctx: DateTimeContext): string {
-  return `Current date and time: ${ctx.utc}${ctx.local ? ` (${ctx.local})` : ''}`;
+  return `Current date and time: ${ctx.utc}${ctx.local ? ` (${ctx.local})` : ''} — internal context; never mention unless the user asks about the time or date.`;
 }
 
 /**
