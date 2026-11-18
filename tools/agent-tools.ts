@@ -120,6 +120,17 @@ export function detectToolIntent(message: string): ToolIntent | null {
     return { tool: 'play_video', query: playQuery };
   }
 
+  // ── Image generation — artwork/pictures, high precision ───────────────────
+  // The model planner owns this, but when planning is unavailable/weak the
+  // regex rollback path must still route "generate an image of …" here instead
+  // of letting the chat model answer with an inline SVG.
+  if (
+    /\b(?:generate|create|draw|make|design|render|paint|sketch|illustrate)\b.{0,48}\b(?:image|picture|photo|illustration|artwork|poster|logo|drawing|painting|avatar|wallpaper|icon)\b/i.test(normalized)
+    || /\b(?:image|picture|photo|illustration|artwork|poster|logo|painting|drawing) of\b/i.test(normalized)
+  ) {
+    return { tool: 'image_generate', query: sanitizeQuery(normalized) };
+  }
+
   // ── Weather — including typos ─────────────────────────────────────────────
   if (/\b(weather|temperature|forecast|rain|humidity|mausam|baarish|tapman|garmi|thand|wether|wheather|forcast|temprature)\b/i.test(lower)) {
     return { tool: 'weather_search', query: sanitizeQuery(normalized) };

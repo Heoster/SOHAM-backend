@@ -26,6 +26,51 @@ const circuitBreakers = new Map<string, CircuitState>();
 const providerCooldowns = new Map<ProviderType, number>();
 const PROVIDER_COOLDOWN_MS = 30_000;
 
+// ── Per-attempt stream watchdog ───────────────────────────────────────────────
+// A provider can accept a streaming request, hold the connection open and never
+// deliver a token. OpenRouter's free router did exactly this in production and
+// consumed the whole 55s request budget, producing the misleading client error
+// "Request timeout - exceeded maximum processing time". Cap (a) the wait for the
+// first token and (b) the gap between subsequent tokens; a watchdog expiry is a
+// normal provider failure, so smart-fallback can move on (or report honestly
+// that all providers failed) instead of stalling the request.
+const FIRST_TOKEN_WATCHDOG_MS = 20_000;
+const TOKEN_GAP_WATCHDOG_MS   = 30_000;
+
+class StreamWatchdogError extends Error {
+  constructor(afterTokens: number, timeoutMs: number) {
+    super(afterTokens === 0
+      ? `provider stalled before the first token (${Math.round(timeoutMs / 1000)}s)`
+      : `provider stream stalled between tokens (${Math.round(timeoutMs / 1000)}s)`);
+    this.name = 'StreamWatchdogError';
+  }
+}
+
+async function nextStreamEvent(
+  subGen: AsyncGenerator<string, void, unknown>,
+  streamedTokens: number,
+): Promise<IteratorResult<string, void>> {
+  const timeoutMs = streamedTokens === 0 ? FIRST_TOKEN_WATCHDOG_MS : TOKEN_GAP_WATCHDOG_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      subGen.next(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new StreamWatchdogError(streamedTokens, timeoutMs)), timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof StreamWatchdogError) {
+      // Unwind the abandoned generator so its finally blocks run. The underlying
+      // socket is not forcibly aborted — it is discarded when the provider ends it.
+      await subGen.return(undefined).catch(() => {});
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function isCircuitOpen(modelId: string): boolean {
   const state = circuitBreakers.get(modelId);
   if (!state) return false;
@@ -459,11 +504,11 @@ export async function* streamWithSmartFallback(
         return { modelUsed: model.id, fallbackTriggered: i > 0, toolsUsed: response.toolsUsed };
       } else if (adapter.generateStream) {
         const subGen = adapter.generateStream({ ...request, model });
-        let next = await subGen.next();
+        let next = await nextStreamEvent(subGen, 0);
         while (!next.done) {
           streamedTokens++;
           yield next.value;
-          next = await subGen.next();
+          next = await nextStreamEvent(subGen, streamedTokens);
         }
       } else {
         const response = await adapter.generate({ ...request, model });
@@ -519,6 +564,14 @@ export function getFriendlyErrorMessage(error: unknown): string {
     return 'The service is temporarily busy. Please try again in a moment.';
   }
   
+  if (errorMessage.includes('exceeded maximum processing time')) {
+    return 'SOHAM took too long to answer this one — the search and model providers were too slow. Please try again (or rephrase).';
+  }
+
+  if (errorMessage.includes('empty stream') || errorMessage.includes('empty completion')) {
+    return 'The AI provider returned an empty response. Please try again.';
+  }
+
   if (errorMessage.includes('timeout') || errorMessage.includes('network') || errorMessage.includes('fetch failed')) {
     return 'Network error. Please check your internet connection and API key configuration.';
   }

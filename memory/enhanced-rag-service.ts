@@ -12,7 +12,7 @@
  * - REAL_WORLD: Live data from tools (web search, weather, news…)
  */
 
-import { generateEmbedding, getUpstashVectorMode } from './embeddings';
+import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ function getUpstashConfig() {
 
 function isUpstashReady(): boolean {
   const { url, token } = getUpstashConfig();
-  return Boolean(url && token);
+  return Boolean(url && token) && !isUpstashMisconfigured();
 }
 
 async function upstashPost(path: string, body: unknown, timeoutMs = 8000): Promise<any> {
@@ -78,6 +78,7 @@ async function upstashPost(path: string, body: unknown, timeoutMs = 8000): Promi
   });
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText);
+    if (looksLikeRedisEndpoint(err)) markUpstashMisconfigured(err);
     throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 120)}`);
   }
   return res.json();

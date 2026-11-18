@@ -126,7 +126,12 @@ export function analyzeQuery(query: string): QueryAnalysisResult {
   const hasRecentWindow = /\b(last|past)\s+(?:the\s+)?(?:some\s+|a few\s+|few\s+|couple of\s+|\d+\s+)?(?:hours?|days?|minutes?|weeks?)\b/i.test(lower);
   const isRecentEvent = hasRecentWindow &&
     /\b(what|happen(?:ed|ing)?|occurred|going on|change|updates?|new)\b/i.test(lower);
-  const isNews     = /\b(news|headlines|breaking|latest|today|yesterday|this week|announcement|update|report|story|article|khabar|samachar|aatki|jankari|suchana)\b/i.test(lower) || isRecentEvent;
+  // Creative/constraint prompts ("write X without the letter e", "every word
+  // starts with…", poems, haikus…) are NEVER news lookups — a single stray
+  // token like "article" must not buy a live-news fan-out. News still wins
+  // whenever it's not clearly a creative-constraint prompt.
+  const isCreativeConstraint = /\b(without using|without the letter|every word|each word|every sentence|each sentence|starts? with|ends? with|\d+[- ]?words?\b|alliteration|haiku|limerick|sonnet|poem|poetically|rhyme|as a poem|in the style of|tongue[- ]in[- ]cheek|short story|bedtime story|write (me )?(a |an |the )?(\d+[- ]?)?words?\b)/i.test(lower);
+  const isNews     = !isCreativeConstraint && (/\b(news|headlines|breaking|latest|today|yesterday|this week|announcement|update|report|story|article|khabar|samachar|aatki|jankari|suchana)\b/i.test(lower) || isRecentEvent);
   const isWeather  = /\b(weather|temperature|forecast|rain|humidity|wind|sunny|cloudy|snow|storm|climate|hot|cold|mausam|baarish|tapman|dhup|thand|garmi)\b/i.test(lower);
   const isFinance  = /\b(stock|price|crypto|bitcoin|ethereum|market|nifty|sensex|nasdaq|dow|forex|usd|inr|eur|share|invest|trading|fund|ipo|dam|bhav|kimat|paise|paisa|kharch|kamai)\b/i.test(lower);
   const isSports   = /\b(cricket|football|soccer|ipl|match|score|live|tournament|league|team|player|goal|wicket|run|innings|series|khel|khiladi|jeet|haar|kaun jeeta)\b/i.test(lower);

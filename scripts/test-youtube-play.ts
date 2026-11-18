@@ -39,6 +39,8 @@ assert.equal(extractPlayQuery('play "blinding lights" official video'), 'blindin
 assert.equal(extractPlayQuery('how to play guitar'), null, 'how-to requests must not become play tools');
 assert.equal(extractPlayQuery('play cricket world cup final'), null, 'sports must fall through to the sports tool');
 assert.equal(extractPlayQuery('what is the weather today'), null);
+assert.equal(extractPlayQuery('play "Imagine" by John Lennon and generate an image of a dove'), 'Imagine by John Lennon', 'compound play+image clause must be cut from the play query');
+assert.equal(extractPlayQuery('play despacito and explain the lyrics'), 'despacito');
 
 // ─── 2) Intent wiring ───────────────────────────────────────────────────────
 assert.equal(detectToolIntent('play despacito')?.tool, 'play_video');

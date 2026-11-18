@@ -56,6 +56,41 @@ function getUpstashBase(): { url: string; token: string } {
   };
 }
 
+// ─── Redis-compat endpoint detection (warn once, then fail closed) ────────────
+// The classic Render/Upstash misconfiguration: UPSTASH_VECTOR_REST_URL points at
+// an Upstash *Redis* instance instead of a Vector index. Redis answers every
+// /upsert with 400 "ERR Command is not available: 'UPSERT' … rediscompatibility".
+// Detect it once, log one actionable line, then go quiet (and stop issuing
+// doomed calls) instead of 400-ing on every tool result.
+let upstashMisconfigured = false;
+let misconfigLogged = false;
+
+/** Redis-compat body sniffing — safe on any Upstash error payload. */
+export function looksLikeRedisEndpoint(body: string): boolean {
+  return /rediscompatibility|Command is not available|ERR unknown command|WRONGTYPE/i.test(body);
+}
+
+export function markUpstashMisconfigured(bodySnippet: string): void {
+  upstashMisconfigured = true;
+  if (misconfigLogged) return;
+  misconfigLogged = true;
+  console.error(
+    '[Upstash] MISCONFIGURED — UPSTASH_VECTOR_REST_URL points at a Redis-compatible endpoint ' +
+    `(${bodySnippet.replace(/\s+/g, ' ').slice(0, 140)}). Vector memory/RAG is now DISABLED for this process. ` +
+    'Fix the Render env vars to the Vector index credentials from console.upstash.com → Vector → your index → REST API (or remove them to disable vector features cleanly).'
+  );
+}
+
+export function isUpstashMisconfigured(): boolean {
+  return upstashMisconfigured;
+}
+
+/** Test hook — clears the misconfiguration flag and its one-time log. */
+export function resetUpstashMisconfigForTests(): void {
+  upstashMisconfigured = false;
+  misconfigLogged = false;
+}
+
 function readDimension(info: any): number | null {
   const candidates = [
     info?.result?.dimension,
@@ -89,6 +124,8 @@ export async function getEmbeddingDimension(): Promise<number> {
   // gemini-embedding-001 API default (3072). Keep those as last-resort defaults
   // when neither EMBEDDING_DIMS nor the /info probe can tell us the true dim.
   const fallbackDim = hasGoogleKey ? 3072 : 512;
+
+  if (upstashMisconfigured) return (cachedDim = cachedDim ?? fallbackDim);
 
   if (url && token) {
     try {
@@ -135,6 +172,7 @@ export function resetUpstashModeCache(): void {
  */
 export async function getUpstashVectorMode(): Promise<'auto-embed' | 'manual'> {
   if (cachedMode) return cachedMode;
+  if (upstashMisconfigured) return (cachedMode = 'manual');
   const { url, token } = getUpstashBase();
   if (!url || !token) return (cachedMode = 'manual');
   try {
@@ -149,6 +187,10 @@ export async function getUpstashVectorMode(): Promise<'auto-embed' | 'manual'> {
       return (cachedMode = 'auto-embed');
     }
     const body = await res.text().catch(() => '');
+    if (looksLikeRedisEndpoint(body)) {
+      markUpstashMisconfigured(body);
+      return (cachedMode = 'manual');
+    }
     console.warn(`[Upstash] data-only /query rejected (${res.status}: ${body.slice(0, 160)}) — manual-vector mode`);
     return (cachedMode = 'manual');
   } catch (err) {
