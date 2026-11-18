@@ -79,6 +79,19 @@ asserts manifest ↔ runner parity forever.
 3. add one line to `CAPABILITY_MANIFEST` (`core/soham-agent.ts`),
 4. `scripts/test-agent.ts` keeps manifest ↔ executor in sync automatically.
 
+## SSE events (chat-stream)
+
+`status` → `token`* (+ `image`? `play`? `sources`?) → `tools`? → `done` | `error`.
+
+- **`sources`** (new) — `{ type:'sources', sources:[{title,url,tool}] }`:
+  research URLs from every tool result, deduped by URL, http(s)-only,
+  tool-tagged, capped at 12. Emitted once, after context settles, before
+  tokens. UI contract: `docs/UI_CHANGES_REQUIRED.md` §A.1/§B.6.
+- **`done`** now also carries `agentTools` (string[]) and `agentPlannedBy`
+  (`model`|`fallback`).
+- The JSON route returns flattened `sources` + `agentPlannedBy` + `agentTools`
+  top-level.
+
 ## Observability
 
 `SohamContextResult` now carries `agentPlannedBy` (`model` | `fallback`),

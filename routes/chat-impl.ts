@@ -15,6 +15,7 @@ import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync, triggerAutoLearnAsync } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
 import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
+import { collectResearchSources } from '../tools/agent-tools';
 import { stripInjectedContext } from '../utils/clean-message';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
@@ -186,6 +187,10 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       previousAssistantMessage: history.length > 0 ? history[history.length - 1]?.content : undefined,
     });
 
+    // Flattened, deduped research sources (same payload shape as the SSE
+    // `sources` event). Per-tool sources remain nested inside toolsUsed too.
+    const researchSources = collectResearchSources(agentContext.toolsUsed);
+
     // A chart that was part of a mixed plan (chart + other tools) rides this
     // same response — the SVG goes out as imageUrl/imageProvider so the client
     // can render it exactly like a generated chart.
@@ -215,6 +220,9 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' }))],
       ...(mixedChart ? { imageUrl: mixedChart.imageDataUri, imageProvider: 'soham-chart' } : {}),
       ...(mixedImage ? { imageUrl: mixedImage.url, imageProvider: mixedImage.provider } : {}),
+      sources: researchSources,
+      agentPlannedBy: agentContext.agentPlannedBy,
+      agentTools: agentContext.agentTools,
       currentDateTime: agentContext.currentDateTime,
       responseTime: `${Date.now() - startTime}ms`,
       timestamp: new Date().toISOString(),

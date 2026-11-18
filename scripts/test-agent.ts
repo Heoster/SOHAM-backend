@@ -14,7 +14,7 @@ import {
   isPlannerWorthy,
   type AgentPlan,
 } from '../core/soham-agent';
-import { runToolByName, detectToolIntent, type SohamToolResult } from '../tools/agent-tools';
+import { runToolByName, detectToolIntent, collectResearchSources, type SohamToolResult } from '../tools/agent-tools';
 
 async function main() {
   // ── 1) Manifest integrity ────────────────────────────────────────────────────
@@ -165,6 +165,31 @@ async function main() {
   assert.equal(detectToolIntent('play https://www.youtube.com/watch?v=abc123')?.tool, 'play_video', 'play intent keeps the URL path');
   assert.equal(detectToolIntent('tell me a joke')?.tool, 'joke');
   console.log('regex fallback ok — explicit URLs route to web_read (rollback path covered)');
+
+  // ── 5c) collectResearchSources: dedupe, http(s)-only, tool tag, cap ─────────
+  const collected = collectResearchSources([
+    { tool: 'web_search', query: 'q', ok: true, output: 'x', sources: [
+      { title: 'A', url: 'https://a.com/1' },
+      { title: 'B', url: 'https://b.com/2' },
+      { title: 'A again', url: 'https://a.com/1' },     // duplicate → dropped
+      { title: 'bad', url: 'ftp://nope.com/3' },         // non-http → dropped
+    ] },
+    { tool: 'web_read', query: 'https://a.com/1', ok: true, output: 'y', sources: [
+      { title: 'A from read', url: 'https://a.com/1' }, // same URL across tools → dropped
+      { title: '', url: 'https://c.com/3' },             // empty title → falls back to URL
+    ] },
+    { tool: 'wikipedia', query: 'q', ok: true, output: 'z' }, // no sources → contributes nothing
+    null,                                                    // tolerates junk entries
+  ] as any);
+  assert.deepEqual(collected.map(s => s.url), ['https://a.com/1', 'https://b.com/2', 'https://c.com/3']);
+  assert.deepEqual(collected.map(s => s.tool), ['web_search', 'web_search', 'web_read']);
+  assert.equal(collected[2].title, 'https://c.com/3', 'empty title falls back to the URL');
+  assert.equal(collectResearchSources([], 12).length, 0);
+  const bigList = collectResearchSources(
+    Array.from({ length: 30 }, (_, i) => ({ tool: 'web_search', query: 'q', ok: true, output: '', sources: [{ title: `T${i}`, url: `https://example.com/${i}` }] })) as any,
+  );
+  assert.equal(bigList.length, 12, 'cap enforced');
+  console.log('sources ok — dedupe, scheme filter, tool tag, title fallback, cap');
 
   // ── 6) runToolByName never throws, even for junk ─────────────────────────────
   const junk = await runToolByName('web_read' as any, '', []);

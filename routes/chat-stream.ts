@@ -9,7 +9,9 @@
  *   { type: 'image',   url, provider, text }    — image generation result
  *   { type: 'play',    tool, ok, openUrl,
  *                      embedUrl, video, … }      — YouTube play result (render iframe + tab fallback)
- *   { type: 'done',    modelUsed, autoRouted }  — stream finished
+ *   { type: 'sources', sources: [{ title, url, tool }] } — research URLs used (deduped, ≤12)
+ *   { type: 'tools',   toolsUsed: string[] }    — Groq builtin tools invoked (browser_search, …)
+ *   { type: 'done',    modelUsed, autoRouted, agentTools, agentPlannedBy }  — stream finished
  *   { type: 'error',   text: string }           — fatal error
  */
 
@@ -23,6 +25,7 @@ import {
 } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
 import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
+import { collectResearchSources } from '../tools/agent-tools';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
@@ -242,6 +245,14 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       }
     }
 
+    // Structured research sources → citations UI. Emitted once, after context
+    // settles and before tokens, so the client can render the citation list
+    // while the answer streams in. Deduped by URL, tool-tagged, capped at 12.
+    const researchSources = collectResearchSources(agentContext.toolsUsed);
+    if (researchSources.length > 0) {
+      sseWrite(res, { type: 'sources', sources: researchSources });
+    }
+
     // ── Routing ──────────────────────────────────────────────────────────────
     // Auto mode: pick the best model per intent.
     // Manual mode: honour the user's explicit model choice.
@@ -309,6 +320,8 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       type: 'done',
       modelUsed,
       autoRouted,
+      agentTools: agentContext.agentTools,        // [] when the planner chose no tools / regex fallback
+      agentPlannedBy: agentContext.agentPlannedBy, // 'model' | 'fallback'
       responseTime: `${Date.now() - startTime}ms`,
       ...(agentContext.degradedLayers.length > 0 && { degradedLayers: agentContext.degradedLayers }),
     });
