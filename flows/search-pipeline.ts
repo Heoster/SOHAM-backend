@@ -7,11 +7,11 @@
  * │          Classify type, extract entities, clean search terms            │
  * │                          ↓                                              │
  * │  STEP 2  Source Selection                                               │
- * │          Tavily (primary) → Firecrawl (enrichment) → free fallbacks    │
+ * │          Tavily (primary) → Jina/Firecrawl (page reading) → free tiers │
  * │                          ↓                                              │
- * │  STEP 3  Parallel Fetch + Firecrawl Enrichment                         │
- * │          Tavily returns ranked results; Firecrawl extracts full content │
- * │          from the top URLs so the AI has richer context                 │
+ * │  STEP 3  Parallel Fetch + Full-Page Reading                            │
+ * │          Top URLs are READ (Jina Reader primary, Firecrawl fallback)   │
+ * │          so the AI answers from actual page content, not snippets      │
  * │                          ↓                                              │
  * │  STEP 4  Result Merge & Rank                                            │
  * │          Deduplicate, score, normalize into unified format              │

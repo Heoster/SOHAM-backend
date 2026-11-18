@@ -92,3 +92,25 @@ DROP TRIGGER IF EXISTS trg_user_profiles_updated_at ON user_profiles;
 CREATE TRIGGER trg_user_profiles_updated_at
   BEFORE UPDATE ON user_profiles
   FOR EACH ROW EXECUTE FUNCTION update_user_profiles_updated_at();
+
+-- ── Documents (Document RAG) ──────────────────────────────────────────────────
+-- Registry of user-uploaded documents. The chunks themselves live in Upstash
+-- Vector (namespace "docs"); chunk_ids records them so DELETE can remove both.
+CREATE TABLE IF NOT EXISTS documents (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  mime_type     TEXT NOT NULL DEFAULT 'application/octet-stream',
+  size_bytes    BIGINT NOT NULL DEFAULT 0,
+  chunk_count   INTEGER NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'ready', 'failed')),
+  error         TEXT,
+  truncated     BOOLEAN NOT NULL DEFAULT FALSE,
+  chunk_ids     JSONB NOT NULL DEFAULT '[]',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS documents_user_id_idx ON documents (user_id, created_at DESC);
+
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "service role full access" ON documents USING (true) WITH CHECK (true);

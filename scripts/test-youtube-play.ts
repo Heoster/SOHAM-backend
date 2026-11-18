@@ -187,6 +187,66 @@ void (async () => {
   if (originalEnv.JINA_API_KEY === undefined) delete process.env.JINA_API_KEY; else process.env.JINA_API_KEY = originalEnv.JINA_API_KEY;
   if (originalEnv.FIRECRAWL_API_KEY === undefined) delete process.env.FIRECRAWL_API_KEY; else process.env.FIRECRAWL_API_KEY = originalEnv.FIRECRAWL_API_KEY;
 
+  // ─── 6) Conversation reference resolution — "play them" after a song list ──
+  {
+    const { resolveReferencedQuery } = await import('../tools/youtube-play');
+
+    const trending = [
+      { role: 'user', content: 'search for some trending hindi songs' },
+      { role: 'assistant', content:
+        'Here are some trending Hindi songs right now:\n' +
+        '• **Delhi Se Manali (Ladka Tera Diwana)** – a feel-good viral track\n' +
+        '• **Kashish** – featuring Ashish Bhatia, Omkar Singh\n' +
+        '• **Hanuman Chalisa** – by Shankar Mahadevan, still strong\n' +
+        '• **Dilruba Dilnasheen** – a fresh romantic release' },
+    ];
+
+    const first = resolveReferencedQuery('play them', trending);
+    assert.equal(first.kind, 'search');
+    assert.equal((first as { query: string }).query, 'Delhi Se Manali (Ladka Tera Diwana)');
+
+    const second = resolveReferencedQuery('play the second one', trending);
+    assert.equal(second.kind, 'search');
+    assert.equal((second as { query: string }).query, 'Kashish');
+
+    const last = resolveReferencedQuery('play the last one', trending);
+    assert.equal((last as { query: string }).query, 'Dilruba Dilnasheen');
+
+    // Exact YouTube URL referenced by the assistant → play that exact video
+    const withUrl = [
+      { role: 'user', content: 'play sapphire' },
+      { role: 'assistant', content: "Here's Ed Sheeran's **Sapphire** official music video:\nhttps://www.youtube.com/watch?v=JgDNFQ2RaLQ 🎵" },
+    ];
+    const direct = resolveReferencedQuery('play it', withUrl);
+    assert.deepEqual(direct, { kind: 'direct', videoId: 'JgDNFQ2RaLQ', reason: 'video the assistant referenced' });
+
+    // Anaphora without any history → stays usable, never crashes
+    const orphan = resolveReferencedQuery('play them', []);
+    assert.equal(orphan.kind, 'search');
+
+    // Normal explicit queries are untouched
+    assert.deepEqual(resolveReferencedQuery('despacito', trending), { kind: 'search', query: 'despacito', reason: 'explicit query' });
+
+    // Fallback: no list in assistant message → most recent user topic
+    const noList = [
+      { role: 'user', content: 'search for some trending hindi songs' },
+      { role: 'assistant', content: 'Trending Hindi songs are booming on Spotify right now.' },
+    ];
+    const topic = resolveReferencedQuery('play them', noList);
+    assert.equal((topic as { query: string }).query.toLowerCase(), 'trending hindi songs');
+
+    // executeSohamTool end-to-end: history flows into the play tool
+    globalThis.fetch = (async () => new Response('fetch failed', { status: 502 })) as typeof fetch;
+    try {
+      const tool = await executeSohamTool('play them', trending);
+      assert.equal(tool?.tool, 'play_video');
+      assert.ok(tool?.openUrl?.includes(encodeURIComponent('Delhi Se Manali')), `must resolve to the listed song, got: ${tool?.openUrl}`);
+      assert.equal(tool?.ok, false, 'offline sandbox — must fail gracefully with the resolved search URL');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
   console.log('youtube-play checks passed ✔');
   process.exit(0);
 })().catch(error => {

@@ -1,5 +1,5 @@
 import { formatResultsForAI, searchDuckDuckGo } from './duckduckgo';
-import { extractPlayQuery } from './youtube-play';
+import { extractPlayQuery, resolveReferencedQuery, type ConversationTurnLike } from './youtube-play';
 import { stripInjectedContext } from '../utils/clean-message';
 
 export type SohamToolName =
@@ -516,9 +516,21 @@ async function webSearch(query: string): Promise<SohamToolResult> {
       return { tool: 'web_search', query: safeQuery, ok: false, output: 'No web search results found.' };
     }
 
-    const output = top
+    // Include the full page content of the top results (read via Jina/Firecrawl
+    // after the search) — the model should answer from the actual pages, not
+    // from snippets alone. Pages read are REAL; cite them with [n].
+    const list = top
       .map((r, i) => `${i + 1}. **${r.title}**\n   ${r.snippet}\n   ${r.url}`)
       .join('\n\n');
+    const pages = top
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => !!r.fullContent)
+      .slice(0, 3)
+      .map(({ r, i }) => `--- Full page content for [${i + 1}] ${r.title} (${r.url}) ---\n${r.fullContent}`)
+      .join('\n\n');
+    const output = pages
+      ? `${list}\n\nPages read for you (real content of the top results):\n\n${pages}`
+      : list;
 
     return {
       tool: 'web_search',
@@ -545,8 +557,61 @@ async function webSearch(query: string): Promise<SohamToolResult> {
   }
 }
 
-async function playVideoTool(query: string): Promise<SohamToolResult> {
-  const safeQuery = sanitizeQuery(query);
+function verifiedLine(title: string | undefined, query: string): string {
+  return (
+    `Playing: ${title ?? query}\n` +
+    '(Resolved live by SOHAM\'s YouTube player just now — the URLs are REAL. ' +
+    'Never call them made-up or unverifiable; present the video confidently.)'
+  );
+}
+
+async function playVideoTool(query: string, history: ConversationTurnLike[] = []): Promise<SohamToolResult> {
+  // "play them" / "play it" / "play the second one" → resolve via conversation
+  const resolution = resolveReferencedQuery(query, history);
+
+  if (resolution.kind === 'direct') {
+    const id = resolution.videoId;
+    const watchUrl = `https://www.youtube.com/watch?v=${id}`;
+    const embedUrl = `https://www.youtube.com/embed/${id}`;
+    // Best-effort REAL metadata (oEmbed, no key) so the player card shows the
+    // actual title — falls back gracefully to a labelled placeholder.
+    let title = `YouTube video ${id}`;
+    let channel: string | undefined;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch(
+        `https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`,
+        { signal: controller.signal },
+      );
+      clearTimeout(timer);
+      if (res.ok) {
+        const meta = await res.json() as { title?: string; author_name?: string };
+        if (meta?.title) title = meta.title;
+        if (meta?.author_name) channel = meta.author_name;
+      }
+    } catch { /* offline / blocked — placeholder title is fine */ }
+    return {
+      tool: 'play_video',
+      query,
+      ok: true,
+      output:
+        `Playing: ${title}\n` +
+        '(Resolved live by SOHAM\'s YouTube player just now — the URLs are REAL. ' +
+        'Never call them made-up or unverifiable; present the video confidently.)\n' +
+        `Embed: ${embedUrl}\n` +
+        `If the embedded player doesn't load, open it in a new tab: ${watchUrl}`,
+      sources: [{ title, url: watchUrl }],
+      openUrl: watchUrl,
+      embedUrl,
+      video: { videoId: id, title, channel, thumbnailUrl: `https://i.ytimg.com/vi/${id}/hqdefault.jpg` },
+    };
+  }
+
+  const safeQuery = sanitizeQuery(resolution.query);
+  const inferredNote = resolution.reason !== 'explicit query'
+    ? ` (inferred from conversation: ${resolution.reason})`
+    : '';
   try {
     const { playYouTubeVideo } = await import('./youtube-play');
     const result = await playYouTubeVideo(safeQuery);
@@ -569,7 +634,7 @@ async function playVideoTool(query: string): Promise<SohamToolResult> {
       query: result.query,
       ok: true,
       output:
-        `Playing: ${result.title}${channelLine}\n` +
+        `${verifiedLine(result.title, result.query)}${inferredNote}${channelLine}\n` +
         `Embed: ${result.embedUrl}\n` +
         `If the embedded player doesn't load, open it in a new tab: ${result.watchUrl}`,
       sources: [
@@ -590,7 +655,10 @@ async function playVideoTool(query: string): Promise<SohamToolResult> {
   }
 }
 
-export async function executeSohamTool(message: string): Promise<SohamToolResult | null> {
+export async function executeSohamTool(
+  message: string,
+  history: ConversationTurnLike[] = [],
+): Promise<SohamToolResult | null> {
   const intent = detectToolIntent(message);
   if (!intent) return null;
 
@@ -606,7 +674,7 @@ export async function executeSohamTool(message: string): Promise<SohamToolResult
     case 'web_search':
       return webSearch(intent.query);
     case 'play_video':
-      return playVideoTool(intent.query);
+      return playVideoTool(intent.query, history);
     case 'translate':
       return translateTool(intent.query);
     case 'sentiment':

@@ -128,6 +128,18 @@ curl http://localhost:8080/api/health
 |--------|----------|-------------|
 | POST | `/api/memory/extract` | Extract & store memories from conversation |
 
+### Documents (Document RAG)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/documents/upload` | Upload a document (multipart `file`, ≤10MB): PDF, DOCX, TXT, MD, CSV, JSON, XML, HTML |
+| GET | `/api/documents?userId=` | List a user's uploaded documents |
+| GET | `/api/documents/:id?userId=` | Document metadata |
+| DELETE | `/api/documents/:id?userId=` | Delete a document and its vector chunks |
+
+See `docs/RAG_AND_UPSTASH_SETUP.md` for setup (Upstash Vector index,
+`documents` Supabase table, verification script).
+
 ### System
 
 | Method | Endpoint | Description |

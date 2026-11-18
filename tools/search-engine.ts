@@ -35,6 +35,7 @@
  */
 
 import { stripInjectedContext } from '../utils/clean-message';
+import { readTopPages } from './page-reader';
 
 
 // ─── Shared types ─────────────────────────────────────────────────────────────
@@ -516,73 +517,35 @@ async function fetchFirecrawlSearch(query: string, queryType: QueryType, timeQue
   })).filter(hit => hit.title && hit.url);
 }
 
-// ─── Step 3b: Firecrawl Deep Extraction ──────────────────────────────────────
-// Firecrawl scrapes and cleans full page content from URLs.
-// We feed it the top Tavily URLs to get richer context for AI synthesis.
-// Docs: https://docs.firecrawl.dev/api-reference/endpoint/scrape
-
-interface FirecrawlScrapeResponse {
-  success: boolean;
-  data?: {
-    markdown?: string;
-    content?: string;
-    metadata?: { title?: string; description?: string };
-  };
-}
-
-async function firecrawlScrapeUrl(url: string): Promise<string> {
-  const key = process.env.FIRECRAWL_API_KEY;
-  if (!key) return '';
-
-  const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      url,
-      formats: ['markdown'],
-      onlyMainContent: true,
-      timeout: 8000,
-    }),
-    signal: AbortSignal.timeout(8000),
-  });
-
-  if (!res.ok) return '';
-
-  const data = await res.json() as FirecrawlScrapeResponse;
-  const raw = data.data?.markdown ?? data.data?.content ?? '';
-  // Trim to 1500 chars — enough context without blowing the AI prompt
-  return raw.slice(0, 1500).trim();
-}
+// ─── Step 3b: Full-page reading (Jina Reader primary → Firecrawl fallback) ───
+// After search, the top URLs are READ — the AI answers from actual page
+// content, not just snippets. Jina Reader is primary; Firecrawl is fallback.
+// Budget: 12s total. If it times out, we return un-enriched results.
 
 /**
- * Enrich the top N Tavily results with full page content via Firecrawl.
- * Runs scrapes in parallel (max 2 URLs to stay within rate limits + keep latency low).
+ * Enrich the top N results with full page content.
+ * Runs reads in parallel (max 3 URLs to stay within rate limits + keep latency low).
  */
-async function enrichWithFirecrawl(results: SearchResult[]): Promise<SearchResult[]> {
-  if (!isConfigured('firecrawl') || results.length === 0) return results;
+async function enrichWithFullContent(results: SearchResult[]): Promise<SearchResult[]> {
+  const jina = !!process.env.JINA_API_KEY;
+  const firecrawl = !!process.env.FIRECRAWL_API_KEY;
+  if (!jina && !firecrawl) return results;
 
-  const TOP_N = 2; // scrape only top 2 — faster, still meaningful
+  const TOP_N = 3;
   const toEnrich = results.slice(0, TOP_N);
   const rest     = results.slice(TOP_N);
 
-  console.log(`[Firecrawl] Enriching ${toEnrich.length} URLs...`);
+  console.log(`[PageReader] Reading top ${toEnrich.length} URLs (jina:${jina} firecrawl:${firecrawl})…`);
 
-  const enriched = await Promise.all(
-    toEnrich.map(async r => {
-      const fullContent = await withTimeout(
-        () => firecrawlScrapeUrl(r.url),
-        7000,
-        ''
-      );
-      if (fullContent) {
-        console.log(`[Firecrawl] ✓ ${r.url.slice(0, 60)}... (${fullContent.length} chars)`);
-      }
-      return { ...r, fullContent: fullContent || undefined };
-    })
-  );
+  const pages = await readTopPages(toEnrich.map(r => r.url), TOP_N, 1500);
+  const byUrl = new Map(pages.map(p => [p.url, p]));
+
+  const enriched = toEnrich.map(r => {
+    const page = byUrl.get(r.url);
+    if (!page || !page.text) return r;
+    console.log(`[PageReader] ✓ ${r.url.slice(0, 60)}… via ${page.via} (${page.text.length} chars)`);
+    return { ...r, fullContent: page.text };
+  });
 
   return [...enriched, ...rest];
 }
@@ -1077,12 +1040,13 @@ async function runSearchPipelineInternal(query: string): Promise<SearchPipelineR
   // ── Step 4: Merge & rank ──────────────────────────────────────────────────
   let merged = mergeAndRank(rawResults);
 
-  // ── Firecrawl enrichment (runs after merge, on top results) ───────────────
-  // Budget: 12s total. If it times out, we return un-enriched results — no blocking.
-  if (sources.includes('firecrawl') && merged.length > 0) {
-    console.log(`[Search] Step 3b — Firecrawl enrichment on top ${Math.min(2, merged.length)} URLs`);
+  // ── Full-page reading (runs after merge, on top results) ───────────────────
+  // Jina Reader primary, Firecrawl fallback. Budget: 12s total. If it times
+  // out, we return un-enriched results — no blocking.
+  if ((process.env.JINA_API_KEY || process.env.FIRECRAWL_API_KEY) && merged.length > 0) {
+    console.log(`[Search] Step 3b — reading top ${Math.min(3, merged.length)} URLs (jina primary)`);
     merged = await withTimeout(
-      () => enrichWithFirecrawl(merged),
+      () => enrichWithFullContent(merged),
       12000,
       merged
     );
