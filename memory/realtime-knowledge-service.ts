@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { generateEmbedding } from './enhanced-rag';
+import { generateEmbedding, getUpstashVectorMode } from './embeddings';
 import { runSearchPipeline } from '../tools/search-engine';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -116,7 +116,11 @@ async function upstashPost(path: string, body: unknown, timeoutMs = 6000): Promi
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) throw new Error(`Upstash ${path} ${res.status}`);
+  if (!res.ok) {
+    // Keep Upstash's reason in the error — a bare "Upstash /upsert 400" is undebuggable.
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`Upstash ${path} ${res.status}: ${bodyText.slice(0, 240)}`);
+  }
   return res.json();
 }
 
@@ -130,18 +134,18 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
   if (!isUpstashReady() || result.content.trim().length < 20) return;
 
   const id = `realworld:${result.type}:${Date.now()}:${randomUUID().slice(0, 8)}`;
-  const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + result.ttlHours * 3_600_000).toISOString();
-  // Keep content short — Upstash has a ~40KB per-request limit and the
-  // embedding vector alone is ~24KB, so data must stay under ~800 chars.
+  // Keep content short — Upstash has a ~40KB per-request limit and a manual
+  // embedding vector alone can be tens of KB, so data stays under ~600 chars.
   const text = `[${result.type.toUpperCase()} — ${result.fetchedAt}] ${result.content.slice(0, 600)}`;
-  const vector = await generateEmbedding(text.slice(0, 512));
+  const mode = await getUpstashVectorMode();
+  const vector = mode === 'manual' ? await generateEmbedding(text.slice(0, 512)) : undefined;
 
   try {
     await upstashPost('/upsert', {
       vectors: [{
         id,
-        vector,
+        ...(mode === 'auto-embed' ? { data: text.slice(0, 1200) } : { vector }),
         metadata: {
           namespace: 'realworld',
           type: result.type,
@@ -153,7 +157,7 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
           // Store a short preview in metadata instead of full data field
           preview: text.slice(0, 300),
         },
-        // data field omitted — use metadata.preview for retrieval
+        // manual mode: vector only; auto-embed mode: data only (metadata.preview stays for cheap retrieval)
       }],
     });
   } catch (err) {
@@ -167,13 +171,17 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
 export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<string[]> {
   if (!isUpstashReady()) return [];
 
-  const vector = await generateEmbedding(queryText.slice(0, 1500));
+  const mode = await getUpstashVectorMode();
+  const vector = mode === 'manual' ? await generateEmbedding(queryText.slice(0, 1500)) : undefined;
+  const semantic = mode === 'auto-embed'
+    ? { data: queryText.slice(0, 1500) }
+    : { vector };
   const now = new Date().toISOString();
 
   let payload: any;
   try {
     payload = await upstashPost('/query', {
-      vector,
+      ...semantic,
       topK: topK * 3,
       includeMetadata: true,
       includeData: true,
@@ -182,7 +190,7 @@ export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<
   } catch {
     try {
       payload = await upstashPost('/query', {
-        vector,
+        ...semantic,
         topK: topK * 5,
         includeMetadata: true,
         includeData: true,
