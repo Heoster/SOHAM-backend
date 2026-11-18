@@ -132,6 +132,56 @@ export function normalizePlan(raw: z.infer<typeof PlanSchema> | null): AgentPlan
 
 // ─── Planner ──────────────────────────────────────────────────────────────────
 
+/**
+ * Planner-worthiness gate — the cheap question "is this message worth a
+ * planner round at all?" that the codebase previously never asked (the model
+ * was consulted on literally every message, including "hi").
+ *
+ * Returns FALSE only for pure pleasantries/acknowledgements/goodbyes with no
+ * URLs and no digits — the model could not possibly select a tool there.
+ * Anything with a URL, a digit, or any non-pleasantry word goes to the
+ * planner. Skipping returns the zero-tool plan with memory_extract:false,
+ * which is also the correct verdict for those turns.
+ */
+const PLEASANTRY_PHRASES: readonly string[] = [
+  // multi-word first (longest match wins during stripping)
+  'how are you doing today', 'how are you doing', 'how are you today', 'how are you',
+  'how is it going', "how's it going", "hows it going", 'how are things', 'how you doing',
+  'good morning', 'good afternoon', 'good evening', 'good night', 'good day',
+  'thank you so much', 'thank you very much', 'thanks so much', 'thanks a lot', 'thank you', 'thanks',
+  'see you later', 'see you soon', 'see you around', 'see ya', 'see you', 'bye bye',
+  'what is up', "what's up", "whats up", "wassup", 'how do you do',
+  'sounds good', 'sure thing', 'got it', 'take care', 'good to see you',
+  'you there', 'are you ok', 'are you there',
+  // single words
+  'hi', 'hii', 'hiii', 'hey', 'heyy', 'hello', 'helloo', 'hiya', 'yo', 'sup',
+  'morning', 'afternoon', 'evening',
+  'thx', 'ty',
+  'ok', 'okay', 'k', 'kk', 'alright', 'all right', 'cool', 'great', 'nice', 'awesome', 'amazing', 'perfect', 'brilliant', 'wonderful', 'good', 'fine',
+  'yes', 'yep', 'yeah', 'yup', 'sure', 'no', 'nope', 'nah', 'right',
+  'bye', 'goodbye', 'later', 'goodnight', 'night', 'there',
+  'who are you', 'what are you', 'test', 'ping',
+].sort((a, b) => b.length - a.length);
+
+const PLEASANTRY_RE = new RegExp(
+  `\\b(?:${PLEASANTRY_PHRASES.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+  'gi',
+);
+
+function escapeRemnant(text: string): string {
+  return text.replace(PLEASANTRY_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** True when the message should go through the planner model; false to skip straight to the zero-tool plan. */
+export function isPlannerWorthy(message: string): boolean {
+  if (!message || !message.trim()) return false;
+  if (/https?:\/\//i.test(message)) return true; // URLs → web_read
+  const normalized = message.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false; // emoji-only / punctuation-only
+  if (/\d/.test(normalized)) return true; // scores, prices, dates, math
+  return escapeRemnant(normalized).length > 0;
+}
+
 const PLANNER_SYSTEM = `You are SOHAM's tool planner. SOHAM is a Self-Organising Hyper-Adaptive Machine.
 Given the user's message and the recent conversation, decide which tools (if any) are needed to answer perfectly.
 
@@ -179,6 +229,13 @@ export async function planToolCalls(
   const historyBlock = history.slice(-4)
     .map(t => `${t.role === 'user' ? 'User' : 'Assistant'}: ${String(t.content).slice(0, 400)}`)
     .join('\n');
+
+  // Planner-worthiness gate — pure pleasantries skip the model entirely and
+  // get the correct verdict for free (no tools, nothing worth remembering).
+  if (!isPlannerWorthy(userMessage)) {
+    logger.info('[Agent] Planner skipped — trivial pleasantry, no tools needed');
+    return { tools: [], memoryExtract: false };
+  }
   const prompt =
     (historyBlock ? `Recent conversation:\n${historyBlock}\n\n` : '') +
     `User's message: ${userMessage.slice(0, 2000)}\n\nPlan the tools (JSON only):`;

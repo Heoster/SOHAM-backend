@@ -27,6 +27,16 @@ user message (+ last 4 turns)
 └───────────────────┘
 ```
 
+## Planner-worthiness gate
+
+Routes (and the planner itself) ask *"is this message worth a planner round
+at all?"* before spending a model call: pure pleasantries/acknowledgements
+("hi", "good morning how are you", "thanks so much", "ok", "👋") skip the
+model entirely and receive the correct verdict for free — zero tools,
+`memory_extract:false`. Anything containing a URL, a digit, or any
+non-pleasantry word goes to the planner. See `isPlannerWorthy()` in
+`core/soham-agent.ts`; regression-checked in `scripts/test-agent.ts`.
+
 ## Why a planner instead of the regex detector?
 
 The old path (`detectToolIntent`) was one regex → one tool → answer. It could

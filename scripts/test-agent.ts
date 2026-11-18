@@ -11,6 +11,7 @@ import {
   planToolCalls,
   executeAgentPlan,
   runSohamAgent,
+  isPlannerWorthy,
   type AgentPlan,
 } from '../core/soham-agent';
 import { runToolByName, type SohamToolResult } from '../tools/agent-tools';
@@ -61,18 +62,40 @@ async function main() {
   console.log('planner ok — fenced JSON with prose parsed');
 
   // Garbage / empty / throwing generator → null (caller falls back)
-  assert.equal(await planToolCalls('hi', [], { generateText: async () => 'not json at all' }), null);
-  assert.equal(await planToolCalls('hi', [], { generateText: async () => '' }), null);
-  assert.equal(await planToolCalls('hi', [], { generateText: async () => { throw new Error('no models'); } }), null);
+  assert.equal(await planToolCalls('who won the 2024 world cup final', [], { generateText: async () => 'not json at all' }), null);
+  assert.equal(await planToolCalls('who won the 2024 world cup final', [], { generateText: async () => '' }), null);
+  assert.equal(await planToolCalls('who won the 2024 world cup final', [], { generateText: async () => { throw new Error('no models'); } }), null);
   console.log('planner ok — garbage/failure → null fallback');
 
-  // Greeting with zero-tool plan → empty results, still model-planned
-  const chitchat = await planToolCalls('hey soham, good morning', [], {
+  // Greeting with zero-tool plan → empty results, still model-planned.
+  // NOTE: 'hey soham, good morning' still reaches the planner (it has a name) —
+  // the worthiness gate only swallows pure pleasantries.
+  const chitchat = await planToolCalls('hmm what is the meaning of life and existence', [], {
     generateText: async () => '{"tools":[],"memory_extract":false}',
   });
   assert.deepEqual(chitchat!.tools, []);
   assert.equal(chitchat!.memoryExtract, false);
   console.log('planner ok — empty plan honoured');
+
+  // ── 3b) Planner-worthiness gate (no model call at all) ─────────────────────
+  let plannerCalled = false;
+  const countingDeps = { generateText: async () => { plannerCalled = true; return '{"tools":[],"memory_extract":false}'; } };
+  for (const trivial of ['hi', 'hey!', 'HELLO.', 'hello there', 'good morning', 'good morning how are you', 'thanks so much', 'ok', 'bye', 'see you later', 'how are you doing today', '👋']) {
+    const skipped = await planToolCalls(trivial, [], countingDeps);
+    assert.deepEqual(skipped, { tools: [], memoryExtract: false }, `expected zero plan for ${JSON.stringify(trivial)}`);
+    assert.equal(plannerCalled, false, `planner model must not be called for ${JSON.stringify(trivial)}`);
+  }
+  assert.equal(isPlannerWorthy('what is the weather in delhi'), true);
+  assert.equal(isPlannerWorthy('play despacito'), true);
+  assert.equal(isPlannerWorthy('thanks, draw me a cat'), true);
+  assert.equal(isPlannerWorthy('check https://example.com please'), true);
+  assert.equal(isPlannerWorthy('who scored in the 80s'), true);
+  assert.equal(isPlannerWorthy('draw me a cat'), true);
+  plannerCalled = false;
+  const worthy = await planToolCalls('hey, who won the ipl last night', [], countingDeps);
+  assert.equal(plannerCalled, true, 'planner must run for real questions');
+  assert.deepEqual(worthy, { tools: [], memoryExtract: false });
+  console.log('planner ok — worthiness gate skips pure pleasantries, runs for real requests');
 
   // ── 4) Executor: parallel, timeouts, failures isolated, output capped ────────
   const runners = {
