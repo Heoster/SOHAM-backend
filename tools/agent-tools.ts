@@ -1,5 +1,6 @@
 import { formatResultsForAI, searchDuckDuckGo } from './duckduckgo';
 import { extractPlayQuery } from './youtube-play';
+import { stripInjectedContext } from '../utils/clean-message';
 
 export type SohamToolName =
   | 'news_search'
@@ -52,7 +53,9 @@ function extractCommandQuery(message: string): { command?: string; query?: strin
 }
 
 export function detectToolIntent(message: string): ToolIntent | null {
-  const normalized = message.trim();
+  // The frontend appends a SOHAM_CLOCK system block to the user text —
+  // strip it so intent detection sees only what the user actually said.
+  const normalized = stripInjectedContext(message);
   const lower = normalized.toLowerCase();
   const { command, query } = extractCommandQuery(normalized);
 

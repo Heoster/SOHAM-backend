@@ -14,6 +14,7 @@ import type { Request, Response } from 'express';
 import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync, triggerAutoLearnAsync } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
+import { stripInjectedContext } from '../utils/clean-message';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
@@ -51,19 +52,23 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       content: msg.content,
     }));
 
+    // Frontend appends a SOHAM_CLOCK block; strip it for intent routing and
+    // memory writes. The model prompt keeps it (it needs the time).
+    const userMessage = stripInjectedContext(message) || message;
+
     // ── Intent detection ────────────────────────────────────────────────────
     const intentDetector = getIntentDetector();
-    const intent = intentDetector.detect(message, convertedHistory);
+    const intent = intentDetector.detect(userMessage, convertedHistory);
 
     if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6) {
       try {
         const pipeline = getSOHAMPipeline();
         const imageResult = await pipeline.generate({
-          userPrompt: intent.extractedQuery || message,
+          userPrompt: intent.extractedQuery || userMessage,
           userId: userId || 'anonymous',
         });
 
-        persistSohamMemory({ userId, userMessage: message, assistantMessage: `[Image generated: ${imageResult.enhancedPrompt}]` }).catch(() => {});
+        persistSohamMemory({ userId, userMessage, assistantMessage: `[Image generated: ${imageResult.enhancedPrompt}]` }).catch(() => {});
 
         res.json({
           success: true,
@@ -120,13 +125,13 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     // ── Non-blocking post-processing ────────────────────────────────────────
     persistSohamMemory({
       userId,
-      userMessage: message,
+      userMessage,
       assistantMessage: result.response.text,
       metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed },
     }).catch(() => {});
-    extractLongTermMemoriesAsync(userId, message, result.response.text);
+    extractLongTermMemoriesAsync(userId, userMessage, result.response.text);
     triggerAutoLearnAsync({
-      userMessage: message,
+      userMessage,
       assistantMessage: result.response.text,
       toolResults: agentContext.toolsUsed,
       modelUsed: result.modelUsed,

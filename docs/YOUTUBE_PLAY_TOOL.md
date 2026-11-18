@@ -46,6 +46,26 @@ user message ──▶ extractPlayQuery() ──▶ buildYouTubeSearchUrl()
 4. Optional pre-check: `https://www.youtube.com/oembed?url=<watchUrl>&format=json`
    (no key, but rate-limited; returns 4xx for deleted/private videos).
 
+## The SOHAM_CLOCK pitfall (why "play X" used to produce news garbage)
+
+The chat frontend appends a hidden `SOHAM_CLOCK … Never guess it.` block to the
+outgoing `message`. Before the `utils/clean-message.ts#stripInjectedContext`
+fix, that whole blob flowed into intent detection and the search pipeline:
+
+- the single-line `play` regex silently failed on multi-line input,
+- `\btoday\b` in the clock text forced `news` classification, and
+- the YouTube/search query included 150 chars of timezone salad.
+
+Mitigation: every internal layer (intent detection, tool routing, query
+analysis, RAG/memory/knowledge lookups, realtime fetch) now sees only the
+stripped user text. The **model prompt keeps the original blob** — the clock is
+for the model. If the frontend changes the clock format, update
+`stripInjectedContext` accordingly.
+
+Also: set `JINA_API_KEY` in the deployment. Keyless `r.jina.ai` works but is a
+shared, aggressively rate-limited pool — the play tool is Jina-primary, so a
+missing/limited key is the difference between instant playback and a timeout.
+
 ## Weaknesses of this approach (read before relying on it)
 
 This is, fundamentally, **scraping YouTube's search page through a third-party

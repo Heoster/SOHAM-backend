@@ -27,6 +27,7 @@ import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
 import { logger } from '../utils/logger';
 import { parseGroqToolOptions } from '../routing/groq-tool-options';
+import { stripInjectedContext } from '../utils/clean-message';
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 
@@ -96,10 +97,13 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       role: msg.role === 'assistant' ? 'model' : 'user',
       content: msg.content,
     }));
+    // Frontend appends a SOHAM_CLOCK block to `message`; strip it for intent
+    // routing and memory. The model prompt keeps it (it needs the time).
+    const userMessage = stripInjectedContext(message) || message;
 
     // ── Intent detection ─────────────────────────────────────────────────────
     const intentDetector = getIntentDetector();
-    const intent = intentDetector.detect(message, convertedHistory);
+    const intent = intentDetector.detect(userMessage, convertedHistory);
 
     // ── Image generation ─────────────────────────────────────────────────────
     if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6) {
@@ -107,14 +111,14 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       try {
         const pipeline = getSOHAMPipeline();
         const imageResult = await pipeline.generate({
-          userPrompt: intent.extractedQuery || message,
+          userPrompt: intent.extractedQuery || userMessage,
           userId: userId || 'anonymous',
         });
 
         sseWrite(res, { type: 'image', url: imageResult.url, provider: imageResult.provider, text: "✨ Here's your image!" });
         sseWrite(res, { type: 'done', modelUsed: `image/${imageResult.model}`, autoRouted: false, responseTime: `${Date.now() - startTime}ms` });
 
-        persistSohamMemory({ userId, userMessage: message, assistantMessage: `[Image generated: ${imageResult.enhancedPrompt}]` }).catch(() => {});
+        persistSohamMemory({ userId, userMessage, assistantMessage: `[Image generated: ${imageResult.enhancedPrompt}]` }).catch(() => {});
         sseEnd(res);
         return;
       } catch (imageError) {
@@ -236,10 +240,10 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
 
     // ── Non-blocking post-processing ─────────────────────────────────────────
     if (fullText) {
-      persistSohamMemory({ userId, userMessage: message, assistantMessage: fullText })
+      persistSohamMemory({ userId, userMessage, assistantMessage: fullText })
         .catch(err => logger.warn('[Stream] Memory persist failed', { error: err instanceof Error ? err.message : String(err) }));
-      extractLongTermMemoriesAsync(userId, message, fullText);
-      triggerAutoLearnAsync({ userMessage: message, assistantMessage: fullText, toolResults: agentContext.toolsUsed, modelUsed });
+      extractLongTermMemoriesAsync(userId, userMessage, fullText);
+      triggerAutoLearnAsync({ userMessage, assistantMessage: fullText, toolResults: agentContext.toolsUsed, modelUsed });
     }
 
   } catch (error) {

@@ -29,6 +29,7 @@
  */
 
 import { logger } from '../utils/logger';
+import { stripInjectedContext } from '../utils/clean-message';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -118,16 +119,18 @@ export function sanitizePlayQuery(query: string): string {
  * how-to / sports request (those belong to web search / sports tools).
  */
 export function extractPlayQuery(message: string): string | null {
-  let m = message.trim();
+  // Strip frontend-injected clock/system blocks — the play command is usually
+  // the only real user text, and it must not leak clock junk into the search.
+  let m = stripInjectedContext(message);
   if (!m) return null;
 
   // Slash command: /play, /watch, /youtube, /yt, /video
-  const slash = m.match(/^\/(?:play|watch|youtube|yt|video|play_video)\s+(.+)$/i);
+  const slash = m.match(/^\/(?:play|watch|youtube|yt|video|play_video)\s+([\s\S]+)$/i);
   if (slash) m = slash[1];
   else {
     // Optional speaker + politeness prefix, then a leading media verb
     const vm = m.match(
-      /^(?:(?:hey\s+)?soham[,!]?\s*)?(?:(?:please|pls)\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?(?:play|watch|put on|stream|open)\s+(.{2,})$/i,
+      /^(?:(?:hey\s+)?soham[,!]?\s*)?(?:(?:please|pls)\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?(?:play|watch|put on|stream|open)\s+([\s\S]{2,})$/i,
     );
     if (!vm) return null;
     m = vm[1];

@@ -34,6 +34,9 @@
  *   GNEWS_API_KEY / CRICAPI_KEY / ALPHA_VANTAGE_API_KEY
  */
 
+import { stripInjectedContext } from '../utils/clean-message';
+
+
 // ─── Shared types ─────────────────────────────────────────────────────────────
 
 export type QueryType =
@@ -946,12 +949,15 @@ function mergeAndRank(all: SearchResult[]): SearchResult[] {
 const _inFlightSearches = new Map<string, Promise<SearchPipelineResult>>();
 
 export function runSearchPipeline(query: string): Promise<SearchPipelineResult> {
-  const key = cacheKey(query.replace(/\b(?:nvidea|nvdia|nvid[ai]a)\b/gi, 'NVIDIA'));
+  // Defense in depth: callers should pass user-authored text only — the frontend
+  // appends a SOHAM_CLOCK block that must never become a search query.
+  const cleaned = stripInjectedContext(query) || query;
+  const key = cacheKey(cleaned.replace(/\b(?:nvidea|nvdia|nvid[ai]a)\b/gi, 'NVIDIA'));
   const pending = _inFlightSearches.get(key);
   if (pending) return pending;
 
   let task: Promise<SearchPipelineResult>;
-  task = runSearchPipelineInternal(query).finally(() => {
+  task = runSearchPipelineInternal(cleaned).finally(() => {
     if (_inFlightSearches.get(key) === task) _inFlightSearches.delete(key);
   });
   _inFlightSearches.set(key, task);
