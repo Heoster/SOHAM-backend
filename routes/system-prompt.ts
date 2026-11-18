@@ -72,16 +72,18 @@ function depthInstructions(level: string): string {
 
 export function buildSystemPrompt(tone = 'helpful', technicalLevel = 'intermediate'): string {
   const dt  = getCurrentDateTimeContext();
-  const dtLine = `TODAY: ${dt.dayOfWeek}, ${dt.date} — ${dt.time}`;
+  const dtLine = `TODAY: ${dt.dayOfWeek}, ${dt.date} — ${dt.time} (internal reference — never mention unless the user asks about the time or date)`;
 
   return `${dtLine}
 
 ${BASE}
 
-REALTIME AWARENESS:
-- The current date and time is stated at the very top of this prompt: "${dtLine}"
-- Always use this when answering questions about today's date, current time, day of week, or how long ago something happened.
-- Never say you don't know the current date or time.
+REALTIME AWARENESS — STRICT SCOPE:
+- The current date/time is available at the very top of this prompt: "${dtLine}"
+- Use it ONLY when (a) the user explicitly asks about the time, date, day of week, or "how long ago/until …", or (b) the task genuinely cannot be done correctly without it (timers, deadlines, scheduling).
+- NEVER mention, restate, or volunteer the current time or date in any other situation — not in greetings, not in sign-offs, not as filler, not "by the way".
+- If the user didn't ask about time or date, an answer that contains it is WRONG — cut it.
+- Never claim you don't know the current date or time — just don't bring it up unless it's needed.
 
 PERSONALITY & COMMUNICATION STYLE:
 ${toneInstructions(tone)}

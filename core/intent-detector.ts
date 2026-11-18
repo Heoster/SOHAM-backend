@@ -8,6 +8,7 @@
 export type IntentType =
   | 'WEB_SEARCH'
   | 'IMAGE_GENERATION'
+  | 'CHART_GENERATION'
   | 'CHAT'
   | 'CODE_GENERATION'
   | 'EXPLANATION'
@@ -198,6 +199,7 @@ export class IntentDetector {
     const lower = normalizedMessage;
 
     const candidates: ScoredIntent[] = [
+      this.detectChartGeneration(lower, contextualMessage, message),
       this.detectImageGeneration(lower, contextualMessage, message),
       this.detectCodeGeneration(lower, contextualMessage, message),
       this.detectTranslation(lower, contextualMessage),
@@ -288,7 +290,62 @@ export class IntentDetector {
     };
   }
 
+  /**
+   * Chart/graph of data — must never reach the diffusion image pipeline.
+   * "Compare the population of the 5 largest Indian cities … draw a chart" used
+   * to match the generic "draw (me|a|an)" image pattern (0.97, tie-breaking in
+   * IMAGE_GENERATION's favour) and produce a random picture.
+   */
+  private detectChartGeneration(lower: string, contextualMessage: string, rawMessage: string): IntentResult {
+    const chartWord = /\b(charts?|graphs?|histograms?|plot|bar\s*charts?|pie\s*charts?|line\s*charts?|column\s*charts?|scatter\s*(plot|chart)|bar\s*graph|pie\s*graph|line\s*graph)\b/i;
+    const hasChartWord = chartWord.test(rawMessage) || chartWord.test(contextualMessage) || chartWord.test(lower);
+
+    if (!hasChartWord) {
+      return {
+        intent: 'CHART_GENERATION',
+        confidence: 0,
+        extractedQuery: contextualMessage,
+        reasoning: 'No chart keyword matched',
+      };
+    }
+
+    const patterns = [
+      { regex: /\b(bar|pie|line|column|scatter|doughnut|donut|area)\s*(chart|graph)\b/i, weight: 0.99 },
+      { regex: /\b(chart|graph|histogram)\s+(of|for|comparing|showing|between|about|on|vs|across|by|from|with)\b/i, weight: 0.99 },
+      { regex: /\b(draw|make|create|generate|show|plot|build|render|banao|dikhao)\b.{0,40}\b(charts?|graphs?|histograms?|plots?)\b/i, weight: 0.99 },
+      { regex: /\b(compare|comparison|versus|vs\.?)\b.{0,80}\b(charts?|graphs?|plots?|histograms?)\b/i, weight: 0.99 },
+      { regex: /\b(charts?|graphs?|plots?|histograms?)\b.{0,80}\b(compare|comparison|population|share|distribution|vs|versus|trend|growth|data|numbers?|figures?|rate|percentage|percent)\b/i, weight: 0.98 },
+      { regex: /\b(charts?|graphs?)\b/i, weight: 0.9 },
+    ];
+
+    let maxConfidence = 0;
+    for (const pattern of patterns) {
+      const match = rawMessage.match(pattern.regex) || contextualMessage.match(pattern.regex) || lower.match(pattern.regex);
+      if (match && pattern.weight > maxConfidence) {
+        maxConfidence = pattern.weight;
+      }
+    }
+
+    return {
+      intent: 'CHART_GENERATION',
+      confidence: Math.min(maxConfidence, 0.99),
+      extractedQuery: contextualMessage,
+      reasoning: maxConfidence > 0 ? 'Chart intent matched' : 'Chart keyword present, weak context',
+    };
+  }
+
   private detectImageGeneration(lower: string, contextualMessage: string, rawMessage: string): IntentResult {
+    // Chart requests are data work, not painting — suppress entirely.
+    const chartWord = /\b(charts?|graphs?|histograms?|plots?|bar\s*charts?|pie\s*charts?|line\s*charts?|column\s*charts?|scatter\s*(plot|chart)|bar\s*graph|pie\s*graph|line\s*graph)\b/i;
+    if (chartWord.test(rawMessage) || chartWord.test(contextualMessage) || chartWord.test(lower)) {
+      return {
+        intent: 'IMAGE_GENERATION',
+        confidence: 0,
+        extractedQuery: contextualMessage,
+        reasoning: 'Suppressed — chart/graph request routes to CHART_GENERATION',
+      };
+    }
+
     const patterns = [
       // Explicit generate/create/make + image noun
       { regex: /\b(generate|create|make|draw|paint|design|produce|banao|dikhao|chitra|tasveer|photo)\s+(an?|the|me|a)?\s*(image|picture|photo|illustration|artwork|graphic|pic|painting|sketch|drawing|wallpaper|poster|logo|banner|thumbnail|avatar|portrait|landscape|scene|render|card|flyer)\b/i, weight: 0.99 },

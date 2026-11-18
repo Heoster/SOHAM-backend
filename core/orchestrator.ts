@@ -22,7 +22,7 @@
 
 import type { MessageData } from '../adapters/types';
 import { executeSohamTool, type SohamToolResult } from '../tools/agent-tools';
-import { stripInjectedContext } from '../utils/clean-message';
+import { stripInjectedContext, scopeInjectedClockInstructions } from '../utils/clean-message';
 import {
   loadCrossDeviceHistory,
   persistCrossDeviceHistory,
@@ -253,6 +253,10 @@ export async function buildSohamPromptContext(input: {
   }
 
   // ── Assemble prompt with context size guard ───────────────────────────────
+  // The frontend's clock block ends with "Answer every question about the time…
+  // Never guess it." — neutralize that imperative in the model prompt (clock
+  // values stay, so the model can still answer time questions correctly).
+  const modelMessage = scopeInjectedClockInstructions(message);
   const dtLine = buildDateTimePromptLine(realtimeCtx.datetime);
 
   let contextSection = contextBlocks.join('\n\n');
@@ -266,8 +270,8 @@ export async function buildSohamPromptContext(input: {
   }
 
   const prompt = contextBlocks.length === 0
-    ? message
-    : `${message}\n\n---\n${dtLine}\n\nBackground context (use naturally — do NOT cite or reference these sources):\n\n${contextSection}`;
+    ? modelMessage
+    : `${modelMessage}\n\n---\n${dtLine}\n\nBackground context (use naturally — do NOT cite or reference these sources):\n\n${contextSection}`;
 
   if (degradedLayers.length > 0) {
     logger.info('[Orchestrator] Degraded layers', { layers: degradedLayers, userId });
