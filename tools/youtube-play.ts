@@ -239,6 +239,9 @@ export function extractPlayQuery(message: string): string | null {
   m = m
     .replace(/^(?:the|a|some|this|that|me)\s+/i, '')
     .replace(/\s+(?:on|in|from|via)\s+(?:youtube|yt|youtube\.com)\b\.?\s*$/i, ' ') // trailing "on youtube"
+    // Cut off trailing non-play clauses from compound requests:
+    // "play X and generate an image of …" → "X" (image request handled by the planner).
+    .replace(/[,;]?\s+(?:and|then|plus)\s+(?:also\s+)?(?:generate|create|draw|make|design|render|paint|sketch|illustrate|write|draft|explain|summari[sz]e|tell|list|build|show|give)\b[\s\S]*$/i, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 

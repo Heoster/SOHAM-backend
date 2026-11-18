@@ -26,13 +26,13 @@ function getUpstash() {
 
 function isUpstashReady(): boolean {
   const { url, token } = getUpstash();
-  return Boolean(url && token);
+  return Boolean(url && token) && !isUpstashMisconfigured();
 }
 
 // ─── Embedding ────────────────────────────────────────────────────────────────
 // Shared implementation (dimension-pinned, see ./embeddings for the why).
 export { generateEmbedding, hashEmbedding } from './embeddings';
-import { generateEmbedding, getUpstashVectorMode } from './embeddings';
+import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
 
 // ─── Upstash Vector helpers ───────────────────────────────────────────────────
 
@@ -49,6 +49,7 @@ async function upstashFetch(path: string, body: unknown, timeoutMs = 8000): Prom
   });
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText);
+    if (looksLikeRedisEndpoint(err)) markUpstashMisconfigured(err);
     throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 120)}`);
   }
   return res.json();

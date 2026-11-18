@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { generateEmbedding, getUpstashVectorMode } from './embeddings';
+import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
 import { runSearchPipeline } from '../tools/search-engine';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ function getUpstash() {
 
 function isUpstashReady(): boolean {
   const { url, token } = getUpstash();
-  return Boolean(url && token);
+  return Boolean(url && token) && !isUpstashMisconfigured();
 }
 
 async function upstashPost(path: string, body: unknown, timeoutMs = 6000): Promise<any> {
@@ -119,6 +119,7 @@ async function upstashPost(path: string, body: unknown, timeoutMs = 6000): Promi
   if (!res.ok) {
     // Keep Upstash's reason in the error — a bare "Upstash /upsert 400" is undebuggable.
     const bodyText = await res.text().catch(() => '');
+    if (looksLikeRedisEndpoint(bodyText)) markUpstashMisconfigured(bodyText);
     throw new Error(`Upstash ${path} ${res.status}: ${bodyText.slice(0, 240)}`);
   }
   return res.json();
