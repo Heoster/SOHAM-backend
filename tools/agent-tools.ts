@@ -205,6 +205,15 @@ export function detectToolIntent(message: string): ToolIntent | null {
     return { tool: 'fact_check', query: sanitizeQuery(normalized) };
   }
 
+  // ── Web read — explicit URL, nothing else claimed the message ──────────────
+  // Lowest priority on purpose (specific skills keep their messages; play URLs
+  // were handled above). Makes page reading reachable on the planner-free
+  // rollback path too (SOHAM_AGENT_DISABLED=1).
+  const urlMatch = normalized.match(/https?:\/\/[^\s)<>\]]+/i);
+  if (urlMatch) {
+    return { tool: 'web_read', query: urlMatch[0] };
+  }
+
   return null;
 }
 
@@ -678,8 +687,10 @@ async function webReadTool(query: string, history: ConversationTurnLike[] = []):
   const { readWebPage } = await import('./page-reader');
   const page = await readWebPage(url, 1800);
   if (!page.text) {
+    console.warn('[WebRead] page unreadable — Jina and Firecrawl both failed', url.slice(0, 200));
     return { tool: 'web_read', query: url, ok: false, output: `Could not read ${url} — the page is unreachable or blocked. Never invent its contents.`, sources: [{ title: url, url }] };
   }
+  console.log(`[WebRead] page read via ${page.via ?? 'jina'} (${page.text.length} chars) — ${url.slice(0, 120)}`);
   return {
     tool: 'web_read',
     query: url,

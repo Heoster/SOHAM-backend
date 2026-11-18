@@ -14,7 +14,7 @@ import {
   isPlannerWorthy,
   type AgentPlan,
 } from '../core/soham-agent';
-import { runToolByName, type SohamToolResult } from '../tools/agent-tools';
+import { runToolByName, detectToolIntent, type SohamToolResult } from '../tools/agent-tools';
 
 async function main() {
   // ── 1) Manifest integrity ────────────────────────────────────────────────────
@@ -157,6 +157,14 @@ async function main() {
   assert.equal(none.results.length, 0);
   assert.equal(none.memoryExtract, false);
   console.log('runSohamAgent ok — zero-tool plan honoured');
+
+  // ── 5b) Regex fallback: explicit URLs route to web_read (still works with the agent disabled) ──
+  assert.equal(detectToolIntent('can you read https://example.com/article for me')?.tool, 'web_read');
+  assert.equal(detectToolIntent('summarize this page https://github.com/Heoster/SOHAM-backend')?.tool, 'web_read');
+  assert.equal(detectToolIntent('here is the link: https://example.com/x please take a look')?.tool, 'web_read');
+  assert.equal(detectToolIntent('play https://www.youtube.com/watch?v=abc123')?.tool, 'play_video', 'play intent keeps the URL path');
+  assert.equal(detectToolIntent('tell me a joke')?.tool, 'joke');
+  console.log('regex fallback ok — explicit URLs route to web_read (rollback path covered)');
 
   // ── 6) runToolByName never throws, even for junk ─────────────────────────────
   const junk = await runToolByName('web_read' as any, '', []);

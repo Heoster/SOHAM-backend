@@ -27,6 +27,11 @@ user message (+ last 4 turns)
 └───────────────────┘
 ```
 
+## web_read deep dive
+
+See `docs/WEB_READ.md` — the page-reading primitive (Jina→Firecrawl), its
+end-to-end flow, failure contract, tuning knobs and observability.
+
 ## Planner-worthiness gate
 
 Routes (and the planner itself) ask *"is this message worth a planner round
