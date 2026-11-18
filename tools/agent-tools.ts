@@ -1,4 +1,5 @@
 import { formatResultsForAI, searchDuckDuckGo } from './duckduckgo';
+import { extractPlayQuery } from './youtube-play';
 
 export type SohamToolName =
   | 'news_search'
@@ -13,7 +14,8 @@ export type SohamToolName =
   | 'recipe'
   | 'joke'
   | 'dictionary'
-  | 'fact_check';
+  | 'fact_check'
+  | 'play_video';
 
 export interface SohamToolResult {
   tool: SohamToolName;
@@ -21,6 +23,12 @@ export interface SohamToolResult {
   ok: boolean;
   output: string;
   sources?: Array<{ title: string; url: string }>;
+  /** URL the client should open (watch URL — or search URL on failure) */
+  openUrl?: string;
+  /** Iframe-friendly embed URL for the chat page */
+  embedUrl?: string;
+  /** Structured video payload for a custom player */
+  video?: { videoId: string; title: string; channel?: string; thumbnailUrl?: string };
 }
 
 interface ToolIntent {
@@ -88,6 +96,17 @@ export function detectToolIntent(message: string): ToolIntent | null {
     if (['factcheck', 'fact_check', 'verify', 'check'].includes(command)) {
       return { tool: 'fact_check', query };
     }
+    if (['play', 'watch', 'youtube', 'yt', 'video', 'play_video'].includes(command)) {
+      return { tool: 'play_video', query };
+    }
+  }
+
+  // ── Play video / YouTube — "play X", "watch X", "soham play X on youtube" ──
+  // Kept ahead of the general search intents and below the sports guard inside
+  // extractPlayQuery (sports messages return null there and fall through).
+  const playQuery = extractPlayQuery(normalized);
+  if (playQuery) {
+    return { tool: 'play_video', query: playQuery };
   }
 
   // ── Weather — including typos ─────────────────────────────────────────────
@@ -523,6 +542,51 @@ async function webSearch(query: string): Promise<SohamToolResult> {
   }
 }
 
+async function playVideoTool(query: string): Promise<SohamToolResult> {
+  const safeQuery = sanitizeQuery(query);
+  try {
+    const { playYouTubeVideo } = await import('./youtube-play');
+    const result = await playYouTubeVideo(safeQuery);
+
+    if (!result.ok || !result.videoId || !result.watchUrl || !result.embedUrl) {
+      return {
+        tool: 'play_video',
+        query: result.query || safeQuery,
+        ok: false,
+        output:
+          `Couldn't resolve a playable video for "${result.query || safeQuery}" right now. ` +
+          `Open the search results here: ${result.searchUrl || 'https://www.youtube.com/results'}`,
+        openUrl: result.searchUrl || 'https://www.youtube.com/results',
+      };
+    }
+
+    const channelLine = result.channel ? `\nChannel: ${result.channel}` : '';
+    return {
+      tool: 'play_video',
+      query: result.query,
+      ok: true,
+      output:
+        `Playing: ${result.title}${channelLine}\n` +
+        `Embed: ${result.embedUrl}\n` +
+        `If the embedded player doesn't load, open it in a new tab: ${result.watchUrl}`,
+      sources: [
+        { title: result.title ?? result.query, url: result.watchUrl },
+        ...result.candidates.slice(1, 4).map(candidate => ({ title: candidate.title, url: candidate.watchUrl })),
+      ],
+      openUrl: result.watchUrl,
+      embedUrl: result.embedUrl,
+      video: {
+        videoId: result.videoId,
+        title: result.title ?? result.query,
+        channel: result.channel,
+        thumbnailUrl: result.thumbnailUrl,
+      },
+    };
+  } catch (error) {
+    return { tool: 'play_video', query: safeQuery, ok: false, output: `Play video failed: ${String(error)}` };
+  }
+}
+
 export async function executeSohamTool(message: string): Promise<SohamToolResult | null> {
   const intent = detectToolIntent(message);
   if (!intent) return null;
@@ -538,6 +602,8 @@ export async function executeSohamTool(message: string): Promise<SohamToolResult
       return financeSearch(intent.query);
     case 'web_search':
       return webSearch(intent.query);
+    case 'play_video':
+      return playVideoTool(intent.query);
     case 'translate':
       return translateTool(intent.query);
     case 'sentiment':

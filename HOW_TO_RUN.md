@@ -110,6 +110,7 @@ curl -X POST $BASE/api/ai/search \
 | GET | `/api/health` | — |
 | POST | `/api/chat` | `message`, `history[]`, `settings.model` |
 | POST | `/api/ai/search` | `query`, `maxResults` |
+| POST | `/api/ai/play-video` | `query` (or `message`) |
 | POST | `/api/ai/solve` | `problem`, `tone`, `technicalLevel` |
 | POST | `/api/ai/summarize` | `text`, `style` |
 | POST | `/api/ai/translate` | `text`, `targetLanguage` |
