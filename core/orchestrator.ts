@@ -22,6 +22,7 @@
 
 import type { MessageData } from '../adapters/types';
 import { executeSohamTool, type SohamToolResult } from '../tools/agent-tools';
+import { stripInjectedContext } from '../utils/clean-message';
 import {
   loadCrossDeviceHistory,
   persistCrossDeviceHistory,
@@ -129,13 +130,16 @@ export async function buildSohamPromptContext(input: {
   userId?: string;
 }): Promise<SohamContextResult> {
   const { message, userId } = input;
+  // The frontend appends a SOHAM_CLOCK block to `message`. The MODEL keeps it
+  // (it needs the time), but analysis/tools/RAG must see only what the user said.
+  const userMessage = stripInjectedContext(message) || message;
   const degradedLayers: string[] = [];
 
   const profileService   = getUserProfileService();
   const knowledgeService = getUpstashKnowledgeService();
 
   // Analyse query type for smarter realtime fetching
-  const queryAnalysis = analyzeQuery(message);
+  const queryAnalysis = analyzeQuery(userMessage);
   const realtimeQueryType = queryAnalysis.queryType === 'news'    ? 'news'
     : queryAnalysis.queryType === 'weather'  ? 'weather'
     : queryAnalysis.queryType === 'finance'  ? 'finance'
@@ -157,14 +161,14 @@ export async function buildSohamPromptContext(input: {
     publicKnowledge$,
     realtimeCtx$,
   ] = await Promise.allSettled([
-    executeSohamTool(message),
-    queryRagContext(userId, message, 5),
+    executeSohamTool(userMessage),
+    queryRagContext(userId, userMessage, 5),
     loadCrossDeviceHistory(userId, 6),
-    searchLongTermMemories(userId, message),
+    searchLongTermMemories(userId, userMessage),
     userId ? profileService.getProfile(userId) : Promise.resolve(null),
-    knowledgeService.searchKnowledge(message, 4, 0.48),
+    knowledgeService.searchKnowledge(userMessage, 4, 0.48),
     needsRealtime
-      ? getRealtimeContext(message, realtimeQueryType as any)
+      ? getRealtimeContext(userMessage, realtimeQueryType as any)
       : Promise.resolve({ datetime: getCurrentDateTimeContext(), liveData: undefined }),
   ]);
 

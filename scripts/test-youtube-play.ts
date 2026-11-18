@@ -11,6 +11,23 @@ import {
   playYouTubeVideo,
 } from '../tools/youtube-play';
 import { detectToolIntent, executeSohamTool } from '../tools/agent-tools';
+import { stripInjectedContext } from '../utils/clean-message';
+
+// ─── 0) Frontend SOHAM_CLOCK injection must be stripped everywhere ──────────
+const CLOCK_BLOB =
+  'Play Big Buck Bunny\n\n' +
+  'SOHAM_CLOCK\n' +
+  'Timezone: India Standard Time (IST, UTC+05:30), no daylight saving. ' +
+  'Current time: 18:39:46 IST (06:39 PM). Today: Wednesday, 18 November 2026. ' +
+  'UTC now: 2026-11-18 13:09:46\n\n' +
+  'Answer every question about the current time, date or day from this clock. Never guess it.';
+
+assert.equal(stripInjectedContext(CLOCK_BLOB), 'Play Big Buck Bunny');
+assert.equal(stripInjectedContext('what time is it\n\nSOHAM_CLOCK\ntime info here\nNever guess it.'), 'what time is it');
+assert.equal(extractPlayQuery(CLOCK_BLOB), 'Big Buck Bunny');
+assert.equal(detectToolIntent(CLOCK_BLOB)?.tool, 'play_video');
+assert.equal(detectToolIntent(CLOCK_BLOB)?.query, 'Big Buck Bunny', 'clock junk must not leak into the play query');
+assert.equal(detectToolIntent('what time is it\n\nSOHAM_CLOCK\nx\nNever guess it.'), null, 'clock must not force news classification or any tool');
 
 // ─── 1) Command extraction ──────────────────────────────────────────────────
 assert.equal(extractPlayQuery('play despacito'), 'despacito');
