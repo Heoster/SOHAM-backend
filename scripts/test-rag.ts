@@ -5,12 +5,17 @@
  */
 import assert from 'assert';
 import { chunkText, ingestDocument, searchDocuments, listDocuments, deleteDocument } from '../memory/document-rag';
+import { resetEmbeddingDimensionCache, resetUpstashModeCache } from '../memory/embeddings';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
 
-type Vec = { id: string; vector: number[]; metadata: any; data?: string };
+type Vec = { id?: string; vector?: number[]; metadata: any; data?: string };
 const store = new Map<string, Vec>();
+// When true, the stub simulates an Upstash index WITH a built-in embedding
+// model (data-only payloads accepted & embedded server-side). When false,
+// it simulates a manual index (data-only /query is rejected, vectors required).
+let autoEmbedMode = false;
 
 function cosine(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
@@ -41,9 +46,27 @@ async function stubbedFetch(input: any, init?: any): Promise<Response> {
   }
   if (url.includes('/query') && method === 'POST') {
     const topK = Number(body.topK ?? 4);
+    if (body.data && !body.vector) {
+      if (!autoEmbedMode) {
+        // manual index: data-only queries are rejected — this is the probe the mode detector relies on
+        return json({ error: 'Missing vector or data' }, 400);
+      }
+      // built-in embedding model: score by token overlap to stay deterministic offline
+      const qTokens = String(body.data).toLowerCase().split(/\W+/).filter(w => w.length > 3);
+      const matches = [...store.values()]
+        .filter(v => filterMatch(v.metadata, body.filter))
+        .map(v => {
+          const hay = `${v.data ?? ''} ${JSON.stringify(v.metadata)}`.toLowerCase();
+          const hits = qTokens.filter(t => hay.includes(t)).length;
+          return { id: v.id, score: qTokens.length ? hits / qTokens.length : 0, metadata: v.metadata, data: v.data };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+      return json({ result: matches });
+    }
     const matches = [...store.values()]
       .filter(v => filterMatch(v.metadata, body.filter))
-      .map(v => ({ id: v.id, score: cosine(body.vector, v.vector), metadata: v.metadata, data: v.data }))
+      .map(v => ({ id: v.id, score: cosine(body.vector, v.vector ?? []), metadata: v.metadata, data: v.data }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
     return json({ result: matches });
@@ -61,6 +84,8 @@ async function main() {
   setEnvUndefined('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY',
     'GOOGLE_AI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY',
     'UPSTASH_VECTOR_REST_URL', 'UPSTASH_VECTOR_REST_TOKEN');
+  resetUpstashModeCache();
+  resetEmbeddingDimensionCache();
   process.env.EMBEDDING_DIMS = '64';   // tiny vectors for a fast, exact test
   process.env.UPSTASH_VECTOR_REST_URL = 'https://uvt.example.com'; // routes through the stub
   process.env.UPSTASH_VECTOR_REST_TOKEN = 'test-token';
@@ -143,7 +168,37 @@ trailer << /Root 1 0 R >>
   for (const d of await listDocuments(userId)) await deleteDocument(userId, d.id);
   assert.equal(store.size, 0);
 
-  // ── 5) Failure path: unreadable file → status failed, no vectors ────────────
+  // ── 5) Auto-embed mode: index with a built-in embedding model ────────────────
+  // In this mode NO vector may be required: upserts carry `data`, queries carry
+  // `data`, and the manual-embedding path must stay dormant.
+  store.clear();
+  autoEmbedMode = true;
+  resetUpstashModeCache();
+  resetEmbeddingDimensionCache();
+  setEnvUndefined('EMBEDDING_DIMS');
+
+  const autoDoc = await ingestDocument(userId, {
+    buffer: Buffer.from('Auto-embed Handbook.\n\nThe Orion project shipped on 12 March 2026 with a single Postgres database.', 'utf8'),
+    name: 'orion-handbook.md',
+    mimeType: 'text/markdown',
+    sizeBytes: 120,
+  });
+  assert.equal(autoDoc.status, 'ready');
+  const storedShapes = [...store.values()];
+  assert.ok(storedShapes.length >= 1, 'chunks must be stored');
+  assert.ok(storedShapes.every(v => typeof v.data === 'string' && v.vector === undefined),
+    'auto-embed upserts must carry data only — never a client-side vector');
+
+  const autoHits = await searchDocuments(userId, 'Orion project shipped', 4, 0.0);
+  assert.ok(autoHits.some(h => h.docName === 'orion-handbook.md'), 'auto-embed mode must retrieve the stored chunk');
+
+  for (const d of await listDocuments(userId)) await deleteDocument(userId, d.id);
+  assert.equal(store.size, 0, 'auto-embed delete must remove the vectors');
+  autoEmbedMode = false;
+  resetUpstashModeCache();
+  console.log('auto-embed mode ok — data-only payloads round-trip without any client-side vector');
+
+  // ── 6) Failure path: unreadable file → status failed, no vectors ────────────
   const failed = await ingestDocument(userId, {
     buffer: Buffer.from([0x00, 0x01, 0x02]),   // 3 bytes of nothing readable
     name: 'empty.txt',

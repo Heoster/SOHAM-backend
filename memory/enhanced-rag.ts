@@ -32,7 +32,7 @@ function isUpstashReady(): boolean {
 // ─── Embedding ────────────────────────────────────────────────────────────────
 // Shared implementation (dimension-pinned, see ./embeddings for the why).
 export { generateEmbedding, hashEmbedding } from './embeddings';
-import { generateEmbedding } from './embeddings';
+import { generateEmbedding, getUpstashVectorMode } from './embeddings';
 
 // ─── Upstash Vector helpers ───────────────────────────────────────────────────
 
@@ -83,7 +83,8 @@ export async function upsertRagEntry(entry: Omit<RagEntry, 'id' | 'createdAt'>):
   if (!isUpstashReady()) return;
 
   const text = entry.text.slice(0, 1500);
-  const vector = await generateEmbedding(text);
+  const mode = await getUpstashVectorMode();
+  const vector = mode === 'manual' ? await generateEmbedding(text) : undefined;
 
   // Dedup check — query top-1 for this user
   try {
@@ -102,7 +103,7 @@ export async function upsertRagEntry(entry: Omit<RagEntry, 'id' | 'createdAt'>):
   await upstashFetch('/upsert', {
     vectors: [{
       id,
-      vector,
+      ...(mode === 'auto-embed' ? {} : { vector }),   // auto-embed: `data` is sent below; never both
       metadata: {
         user_id: entry.userId,
         role: entry.role,
@@ -131,12 +132,15 @@ export async function queryRagEntries(
 ): Promise<RagSearchResult[]> {
   if (!isUpstashReady() || !userId) return [];
 
-  const vector = await generateEmbedding(queryText);
+  const mode = await getUpstashVectorMode();
+  const semantic = mode === 'auto-embed'
+    ? { data: queryText.slice(0, 1500) }
+    : { vector: await generateEmbedding(queryText) };
 
   let payload: any;
   try {
     payload = await upstashFetch('/query', {
-      vector,
+      ...semantic,
       topK: topK * 3, // over-fetch then re-rank
       includeMetadata: true,
       includeData: true,
@@ -146,7 +150,7 @@ export async function queryRagEntries(
     // Filter syntax may not be supported on all Upstash plans — retry without filter
     try {
       payload = await upstashFetch('/query', {
-        vector,
+        ...semantic,
         topK: topK * 5,
         includeMetadata: true,
         includeData: true,

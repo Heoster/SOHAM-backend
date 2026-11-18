@@ -19,7 +19,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { generateEmbedding } from './embeddings';
+import { generateEmbedding, getUpstashVectorMode } from './embeddings';
 import { logger } from '../utils/logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -316,11 +316,12 @@ async function registryDelete(id: string): Promise<string[]> {
 async function upsertChunk(userId: string, docId: string, docName: string, chunkIndex: number, text: string): Promise<string | null> {
   if (!isUpstashReady()) return null;
   const id = `doc:${userId}:${docId}:${chunkIndex}`;
-  const vector = await generateEmbedding(text);
+  const mode = await getUpstashVectorMode();
+  const vector = mode === 'manual' ? await generateEmbedding(text) : undefined;
   await upstashFetch('/upsert', {
     vectors: [{
       id,
-      vector,
+      ...(mode === 'auto-embed' ? {} : { vector }),   // auto-embed: `data` below is the embedded source
       metadata: {
         type: 'DOCUMENT_CHUNK',
         namespace: 'docs',
@@ -340,12 +341,15 @@ async function upsertChunk(userId: string, docId: string, docName: string, chunk
 export async function searchDocuments(userId: string | undefined, query: string, topK = 4, minSimilarity = 0.30): Promise<DocumentSearchHit[]> {
   if (!userId || !isUpstashReady()) return [];
   const safeUser = filterSafe(userId);
-  const vector = await generateEmbedding(query.slice(0, 1500));
+  const mode = await getUpstashVectorMode();
+  const semantic = mode === 'auto-embed'
+    ? { data: query.slice(0, 1500) }
+    : { vector: await generateEmbedding(query.slice(0, 1500)) };
 
   let payload: any;
   try {
     payload = await upstashFetch('/query', {
-      vector,
+      ...semantic,
       topK,
       includeMetadata: true,
       includeData: true,
@@ -354,7 +358,7 @@ export async function searchDocuments(userId: string | undefined, query: string,
   } catch {
     // Filter unsupported on this index — query broad, filter client-side
     try {
-      payload = await upstashFetch('/query', { vector, topK: topK * 4, includeMetadata: true, includeData: true });
+      payload = await upstashFetch('/query', { ...semantic, topK: topK * 4, includeMetadata: true, includeData: true });
     } catch {
       return [];
     }

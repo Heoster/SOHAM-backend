@@ -35,7 +35,9 @@ export function hashEmbedding(text: string, dimensions = 512): number[] {
     vec[h % dimensions] += 1;
   }
   const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return vec.map(v => v / norm);
+  // 7 decimals ≈ float32 precision; keeps JSON payloads small (~30% less) —
+  // Upstash rejects oversized request bodies and stores float32 anyway.
+  return vec.map(v => Math.round((v / norm) * 1e7) / 1e7);
 }
 
 // ─── Index dimension detection (cached) ───────────────────────────────────────
@@ -112,6 +114,49 @@ export async function getEmbeddingDimension(): Promise<number> {
   return (cachedDim = fallbackDim);
 }
 
+// ─── Index capability probe — auto-embed vs manual vectors ────────────────────
+// An Upstash index may OR may not have a built-in embedding model. With one,
+// payloads of { data } are embedded server-side (same space for writes and
+// queries — always consistent). Without one, every payload needs a correctly
+// sized `vector`. We probe once with a harmless data-only /query (no writes,
+// no cost) and cache the answer.
+
+let cachedMode: 'auto-embed' | 'manual' | null = null;
+
+/** Test hook — clears the cached mode. */
+export function resetUpstashModeCache(): void {
+  cachedMode = null;
+}
+
+/**
+ * 'auto-embed' → the index has a built-in embedding model; prefer { data }
+ * payloads. 'manual' → the index needs client-side vectors
+ * (generateEmbedding at getEmbeddingDimension()).
+ */
+export async function getUpstashVectorMode(): Promise<'auto-embed' | 'manual'> {
+  if (cachedMode) return cachedMode;
+  const { url, token } = getUpstashBase();
+  if (!url || !token) return (cachedMode = 'manual');
+  try {
+    const res = await fetch(`${url}/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ data: 'capability probe', topK: 1, includeMetadata: false, includeData: false }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      console.log('[Upstash] Built-in embedding model detected (data-only /query accepted) — auto-embed mode');
+      return (cachedMode = 'auto-embed');
+    }
+    const body = await res.text().catch(() => '');
+    console.warn(`[Upstash] data-only /query rejected (${res.status}: ${body.slice(0, 160)}) — manual-vector mode`);
+    return (cachedMode = 'manual');
+  } catch (err) {
+    console.warn('[Upstash] Mode probe failed — manual-vector mode', err instanceof Error ? err.message : err);
+    return (cachedMode = 'manual');
+  }
+}
+
 // ─── Semantic embedding (Google gemini-embedding-001, MRL) ────────────────────
 
 function truncateToDimension(values: number[], dim: number): number[] | null {
@@ -120,7 +165,7 @@ function truncateToDimension(values: number[], dim: number): number[] | null {
   const sliced = values.slice(0, dim).map(v => (Number.isFinite(v) ? v : 0));
   const norm = Math.sqrt(sliced.reduce((s, v) => s + v * v, 0));
   if (norm === 0 || !Number.isFinite(norm)) return null;   // all-unusable → caller falls back to hash
-  return sliced.map(v => v / norm);
+  return sliced.map(v => Math.round((v / norm) * 1e7) / 1e7);   // quantize — see hashEmbedding
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {

@@ -24,6 +24,7 @@
 
 import { randomUUID } from 'crypto';
 import { generateEmbedding } from './enhanced-rag';
+import { getUpstashVectorMode } from './embeddings';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -120,13 +121,14 @@ export class UpstashKnowledgeService {
     const storeText = entry.question
       ? `Q: ${entry.question.slice(0, 200)}\nA: ${entry.content.slice(0, 400)}`
       : entry.content.slice(0, 500);
-    const vector = await generateEmbedding(storeText.slice(0, 512));
+    const mode = await getUpstashVectorMode();
+    const vector = mode === 'manual' ? await generateEmbedding(storeText.slice(0, 512)) : undefined;
 
     try {
       await upstashFetch('/upsert', {
         vectors: [{
           id,
-          vector,
+          ...(mode === 'auto-embed' ? { data: storeText } : { vector }),   // auto-embed needs data; manual needs vector; never both
           metadata: {
             type: entry.type,
             question: (entry.question ?? '').slice(0, 200),
@@ -139,7 +141,6 @@ export class UpstashKnowledgeService {
             // Store content in metadata to avoid data field size issues
             content_preview: entry.content.slice(0, 400),
           },
-          // data field omitted to keep payload under Upstash's ~40KB limit
         }],
       });
 
@@ -160,13 +161,16 @@ export class UpstashKnowledgeService {
   ): Promise<KnowledgeSearchResult[]> {
     if (!isUpstashReady()) return [];
 
-    const vector = await generateEmbedding(queryText.slice(0, 1500));
+    const mode = await getUpstashVectorMode();
+    const semantic = mode === 'auto-embed'
+      ? { data: queryText.slice(0, 1500) }
+      : { vector: await generateEmbedding(queryText.slice(0, 1500)) };
 
     let payload: any;
     try {
       // Try with namespace filter first
       payload = await upstashFetch('/query', {
-        vector,
+        ...semantic,
         topK: topK * 3,
         includeMetadata: true,
         includeData: true,
@@ -176,7 +180,7 @@ export class UpstashKnowledgeService {
       // Fallback: no filter, then filter client-side
       try {
         payload = await upstashFetch('/query', {
-          vector,
+          ...semantic,
           topK: topK * 5,
           includeMetadata: true,
           includeData: true,

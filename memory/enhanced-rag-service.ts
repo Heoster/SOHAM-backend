@@ -12,6 +12,8 @@
  * - REAL_WORLD: Live data from tools (web search, weather, news…)
  */
 
+import { generateEmbedding, getUpstashVectorMode } from './embeddings';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface MemoryChunk {
@@ -200,10 +202,14 @@ export class EnhancedRAGService {
     if (!isUpstashReady()) return [];
 
     try {
+      const mode = await getUpstashVectorMode();
+      const semantic = mode === 'auto-embed'
+        ? { data: query.slice(0, 1500) }
+        : { vector: await generateEmbedding(query.slice(0, 1500)) };
       let payload: any;
       try {
         payload = await upstashPost('/query', {
-          data: query,          // Upstash auto-embeds when using data field
+          ...semantic,
           topK: topK * 2,
           includeMetadata: true,
           includeData: true,
@@ -212,7 +218,7 @@ export class EnhancedRAGService {
       } catch {
         // Retry without filter (some Upstash plans don't support metadata filters)
         payload = await upstashPost('/query', {
-          data: query,
+          ...semantic,
           topK: topK * 4,
           includeMetadata: true,
           includeData: true,
@@ -261,10 +267,14 @@ export class EnhancedRAGService {
     // Short-term → Upstash Vector
     if (chunk.type === 'SHORT_TERM' && isUpstashReady()) {
       try {
+        const mode = await getUpstashVectorMode();
+        const semantic = mode === 'auto-embed'
+          ? { data: chunk.content }   // index embeds server-side (built-in model)
+          : { vector: await generateEmbedding(chunk.content.slice(0, 1000)) };
         await upstashPost('/upsert', {
           vectors: [{
             id,
-            data: chunk.content,   // Upstash auto-embeds
+            ...semantic,
             metadata: {
               user_id: chunk.userId,
               type: chunk.type,

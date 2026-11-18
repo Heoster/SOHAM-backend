@@ -46,6 +46,26 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  // ── 1b) data-only probe — does the index embed for us (built-in model)? ──
+  try {
+    const probeRes = await fetch(`${url}/query`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ data: 'capability probe', topK: 1, includeMetadata: false, includeData: false }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const probeBody = await probeRes.text();
+    if (probeRes.ok) {
+      console.log('\n[1b] data-only /query → HTTP 200 — index HAS a built-in embedding model.');
+      console.log('     SOHAM stores/queries with data-only payloads (auto-embed mode); no embedding keys needed.');
+    } else {
+      console.log(`\n[1b] data-only /query → HTTP ${probeRes.status}: ${probeBody.slice(0, 200)}`);
+      console.log('     Index has NO built-in embedding model — SOHAM sends its own vectors (manual mode),');
+      console.log('     sized to the index dimension above.');
+    }
+  } catch {
+    console.log('\n[1b] data-only probe failed — SOHAM assumes manual-vector mode (safe default).');
+  }
+
   const dim = embedDimsEnv ?? dimension;
   if (dim) {
     console.log(`\n✓ Embedding dimension for this index: ${dim}${embedDimsEnv ? ' (from EMBEDDING_DIMS)' : ' (from /info)'}`);

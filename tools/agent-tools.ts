@@ -767,6 +767,39 @@ async function summarizeTool(query: string): Promise<SohamToolResult> {
  * model-driven agent planner. Never throws: every failure becomes an
  * ok:false result the model can reason about.
  */
+// ─── Research sources — flattened, deduped, client-ready ─────────────────────
+// Used by the chat routes to emit the `sources` SSE event (chat-stream) and the
+// flattened `sources` array (chat-impl). Play URLs are tagged tool:'play_video'
+// so the frontend can skip them (they have a dedicated `play` channel).
+
+export interface ResearchSource {
+  title: string;
+  url: string;
+  tool: string;
+}
+
+export function collectResearchSources(
+  results: ReadonlyArray<SohamToolResult | null | undefined>,
+  cap = 12,
+): ResearchSource[] {
+  const seen = new Set<string>();
+  const out: ResearchSource[] = [];
+  for (const r of results) {
+    if (!r) continue;
+    const tool = typeof r.tool === 'string' ? r.tool : 'tool';
+    const list = Array.isArray(r.sources) ? r.sources : [];
+    for (const s of list) {
+      const url = typeof s?.url === 'string' ? s.url.trim() : '';
+      if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+      seen.add(url);
+      const title = typeof s?.title === 'string' && s.title.trim() ? s.title.trim().slice(0, 200) : url;
+      out.push({ title, url, tool });
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
+}
+
 export async function runToolByName(
   tool: SohamToolName,
   query: string,
