@@ -46,6 +46,7 @@ const LOCAL_FUNCTION_TOOLS = [
   { type: 'function', function: { name: 'get_weather', description: 'Get current weather or forecast information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A city or weather question.' } }, required: ['query'], additionalProperties: false } } },
   { type: 'function', function: { name: 'search_sports', description: 'Look up current sports and cricket scores or match information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A team, match, or sports query.' } }, required: ['query'], additionalProperties: false } } },
   { type: 'function', function: { name: 'search_finance', description: 'Look up financial, stock, or cryptocurrency information.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'A stock, ticker, crypto, or finance query.' } }, required: ['query'], additionalProperties: false } } },
+  { type: 'function', function: { name: 'play_youtube', description: 'Find the best-matching YouTube video for what the user wants to watch and return its embed and watch URLs.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'What to play, e.g. "lofi hip hop radio".' } }, required: ['query'], additionalProperties: false } } },
 ] as const;
 
 const LOCAL_TOOL_COMMANDS: Record<string, string> = {
@@ -54,6 +55,7 @@ const LOCAL_TOOL_COMMANDS: Record<string, string> = {
   get_weather: 'weather',
   search_sports: 'sports',
   search_finance: 'finance',
+  play_youtube: 'play',
 };
 
 function builtInToolPayload(tools: GroqBuiltinTool[]): Array<{ type: GroqBuiltinTool }> {
@@ -159,7 +161,13 @@ export class GroqAdapter extends BaseProviderAdapter {
             const result = await executeSohamTool(`/${command} ${query}`);
             toolsUsed.add(call.function.name);
             const content = result
-              ? JSON.stringify({ ok: result.ok, output: result.output.slice(0, 6000), sources: result.sources ?? [] })
+              ? JSON.stringify({
+                  ok: result.ok,
+                  output: result.output.slice(0, 6000),
+                  sources: result.sources ?? [],
+                  ...(result.openUrl ? { openUrl: result.openUrl } : {}),
+                  ...(result.embedUrl ? { embedUrl: result.embedUrl } : {}),
+                })
               : JSON.stringify({ ok: false, output: 'Tool did not return a result.' });
             return { role: 'tool' as const, tool_call_id: call.id, name: call.function.name, content };
           }));

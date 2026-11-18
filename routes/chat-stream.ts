@@ -7,6 +7,8 @@
  *   { type: 'status',  text: string }           — pipeline stage label
  *   { type: 'token',   text: string }           — one AI token
  *   { type: 'image',   url, provider, text }    — image generation result
+ *   { type: 'play',    tool, ok, openUrl,
+ *                      embedUrl, video, … }      — YouTube play result (render iframe + tab fallback)
  *   { type: 'done',    modelUsed, autoRouted }  — stream finished
  *   { type: 'error',   text: string }           — fatal error
  */
@@ -143,6 +145,21 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     if (agentContext.toolsUsed.length > 0) {
       const toolNames = agentContext.toolsUsed.map((t: any) => t.tool).join(', ');
       sseWrite(res, { type: 'status', text: `Using: ${toolNames}…` });
+    }
+
+    // Emit a dedicated play event so the chat page can mount the iframe (and its
+    // "open in tab" fallback) without waiting for the full model response.
+    const playTool = agentContext.toolsUsed.find((t: any) => t?.tool === 'play_video');
+    if (playTool) {
+      sseWrite(res, {
+        type: 'play',
+        tool: 'play_video',
+        ok: !!playTool.ok,
+        openUrl: playTool.openUrl,   // watch URL (or search URL when ok=false)
+        embedUrl: playTool.embedUrl, // undefined when ok=false
+        video: playTool.video,       // { videoId, title, channel, thumbnailUrl }
+        ...(playTool.sources ? { candidates: playTool.sources.slice(1) } : {}),
+      });
     }
 
     // ── Routing ──────────────────────────────────────────────────────────────

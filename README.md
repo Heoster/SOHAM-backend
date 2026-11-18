@@ -56,6 +56,7 @@ GitHub Actions runs `npm ci`, TypeScript typechecking, the production build, and
 | `/api/chat` | `POST` | Chat with orchestration and memory |
 | `/api/chat/stream` | `POST` | SSE chat with provider fallback |
 | `/api/ai/search` | `POST` | Web search (Tavily + Firecrawl) |
+| `/api/ai/play-video` | `POST` | YouTube play resolver — Jina Reader → Firecrawl fallback; returns embed + watch URLs |
 | `/api/ai/solve` | `POST` | Math and logic problem solver |
 | `/api/ai/pdf-analyzer` | `POST` | Multimodal PDF analysis |
 | `/api/image/generate` | `POST` | Opt-in Cloudflare image generation, falling back to Pollinations |

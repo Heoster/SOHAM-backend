@@ -47,6 +47,7 @@ import { chatHandler } from './routes/chat';
 import { chatPersonalityHandler } from './routes/chat-personality';
 import { chatStreamHandler } from './routes/chat-stream';
 import { searchHandler } from './routes/ai/search';
+import { playVideoHandler } from './routes/ai/play-video';
 import { solveHandler } from './routes/ai/solve';
 import { summarizeHandler } from './routes/ai/summarize';
 import { imageSolverHandler } from './routes/ai/image-solver';
@@ -210,6 +211,7 @@ app.post('/api/chat/stream',      chatStreamHandler);
 
 // ── AI Tools (60s timeout) ────────────────────────────────────────────────────
 app.post('/api/ai/search',       withTimeout(searchHandler,      60_000));
+app.post('/api/ai/play-video',   withTimeout(playVideoHandler,   30_000));
 app.post('/api/ai/solve',        withTimeout(solveHandler,       60_000));
 app.post('/api/ai/summarize',    withTimeout(summarizeHandler,   60_000));
 app.post('/api/ai/translate',    withTimeout(translateHandler,   30_000));
@@ -249,7 +251,7 @@ app.post('/api/memory/knowledge/suggestion',   storeSuggestionHandler);
 // Catches requests to known paths with the wrong HTTP method
 const knownPaths = new Set([
   '/api/health', '/api/health/live', '/api/health/ready', '/api/health/services', '/api/chat', '/api/chat/personality', '/api/chat/stream',
-  '/api/ai/search', '/api/ai/solve', '/api/ai/summarize',
+  '/api/ai/search', '/api/ai/solve', '/api/ai/summarize', '/api/ai/play-video',
   '/api/ai/image-solver', '/api/ai/pdf-analyzer',
   '/api/ai/translate', '/api/ai/sentiment', '/api/ai/classify',
   '/api/ai/grammar', '/api/ai/quiz', '/api/ai/recipe',
@@ -286,6 +288,7 @@ app.use((req: Request, res: Response) => {
       'POST /api/chat',
       'POST /api/chat/personality',
       'POST /api/ai/search',
+      'POST /api/ai/play-video',
       'POST /api/ai/solve',
       'POST /api/ai/summarize',
       'POST /api/ai/image-solver',
