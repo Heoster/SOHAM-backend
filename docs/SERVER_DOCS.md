@@ -82,6 +82,21 @@ curl http://localhost:8080/api/health
 
 ---
 
+## SOHAM Agent Loop
+
+Every chat turn is planned by the model before execution: a planner model
+reads the message (+ last turns) and decides which of SOHAM's 19 tools the
+request needs — `web_search` (which reads the top 3 pages), `web_read`,
+`wikipedia`, `news_search`, `weather_search`, `sports_search`,
+`finance_search`, `fact_check`, `dictionary`, `translate`, `sentiment`,
+`grammar`, `quiz`, `recipe`, `joke`, `play_video` (resolves "them"/"it"),
+`chart` (deterministic SVG), `image_generate` (short-circuit), `summarize` —
+plus whether the turn is worth remembering (`memory_extract`). The executor
+runs the plan in parallel (per-tool 30s cap, failures isolated), and the
+synthesis model answers from grounded output. Any planner failure falls back
+to the deterministic regex path; `SOHAM_AGENT_DISABLED=1` is the ops kill-switch.
+See `docs/SOHAM_AGENT_LOOP.md`.
+
 ## All Endpoints
 
 ### Chat

@@ -22,6 +22,7 @@ import {
   triggerAutoLearnAsync,
 } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
+import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
@@ -101,17 +102,37 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     // routing and memory. The model prompt keeps it (it needs the time).
     const userMessage = stripInjectedContext(message) || message;
 
-    // ── Intent detection ─────────────────────────────────────────────────────
+    // ── Intent detection (regex — deterministic fallback) ────────────────────
     const intentDetector = getIntentDetector();
     const intent = intentDetector.detect(userMessage, convertedHistory);
 
+    // ── Model-driven plan (SOHAM agent): the model decides which tools this
+    // request needs — playback, search+page reading, wikipedia, charts, image
+    // gen, memory extraction… Falls back to regex routing on any failure.
+    const agentDisabled = isSohamAgentDisabled();
+    const agentPlan = agentDisabled ? null : await planToolCalls(userMessage, convertedHistory).catch(() => null);
+    const planImage = agentPlan?.tools.find(t => t.tool === 'image_generate');
+    const planChart = agentPlan?.tools.find(t => t.tool === 'chart');
+    // Short-circuits are for single-purpose plans only (or no plan + regex).
+    // A chart/image inside a MIXED plan runs inline via the agent — the SVG or
+    // generated image rides the `image` SSE event after context settles — so
+    // the other tools in the plan are not silently dropped.
+    const planImageOnly = Boolean(agentPlan && agentPlan.tools.length > 0 && agentPlan.tools.every(t => t.tool === 'image_generate'));
+    const planChartOnly = Boolean(agentPlan && agentPlan.tools.length > 0 && agentPlan.tools.every(t => t.tool === 'chart'));
+    const imageFromRegex = !agentPlan && intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6;
+    const chartFromRegex = !agentPlan && intent.intent === 'CHART_GENERATION' && intent.confidence > 0.6;
+    const imageWanted = planImageOnly || imageFromRegex;
+    const chartWanted = !imageWanted && (planChartOnly || chartFromRegex);
+    const imagePrompt = planImage?.query || intent.extractedQuery || userMessage;
+    const chartPrompt = planChart?.query || intent.extractedQuery || userMessage;
+
     // ── Image generation ─────────────────────────────────────────────────────
-    if (intent.intent === 'IMAGE_GENERATION' && intent.confidence > 0.6) {
+    if (imageWanted) {
       sseWrite(res, { type: 'status', text: 'Generating image…' });
       try {
         const pipeline = getSOHAMPipeline();
         const imageResult = await pipeline.generate({
-          userPrompt: intent.extractedQuery || userMessage,
+          userPrompt: imagePrompt,
           userId: userId || 'anonymous',
         });
 
@@ -130,12 +151,12 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     }
 
     // ── Chart generation (deterministic SVG — never the diffusion pipeline) ──
-    if (intent.intent === 'CHART_GENERATION' && intent.confidence > 0.6) {
+    if (chartWanted) {
       sseWrite(res, { type: 'status', text: 'Drawing chart…' });
       try {
         const { runChartPipeline } = await import('../flows/chart');
         const chart = await runChartPipeline({
-          query: intent.extractedQuery || userMessage,
+          query: chartPrompt,
           preferredModel: typeof settings.model === 'string' && settings.model !== 'auto' ? settings.model : undefined,
         });
 
@@ -167,7 +188,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     try {
       [systemPrompt, agentContext] = await Promise.all([
         Promise.resolve(buildSystemPrompt(settings.tone || 'helpful', settings.technicalLevel || 'intermediate')),
-        buildSohamPromptContext({ message, history: convertedHistory, userId }),
+        buildSohamPromptContext({ message, history: convertedHistory, userId, agentPlan }),
       ]);
     } finally {
       clearInterval(heartbeat);
@@ -194,6 +215,31 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
         video: playTool.video,       // { videoId, title, channel, thumbnailUrl }
         ...(playTool.sources ? { candidates: playTool.sources.slice(1) } : {}),
       });
+    }
+
+    // A mixed plan (chart + other tools) lands here instead of the chart
+    // short-circuit — emit the SVG through the same image event.
+    const chartResult = agentContext.toolsUsed.find((t: any) => t?.chart);
+    if (chartResult?.chart) {
+      sseWrite(res, { type: 'image', url: chartResult.chart.imageDataUri, provider: 'soham-chart', text: chartResult.chart.title });
+    }
+
+    // Same for a mixed plan carrying image_generate: render now, emit the image
+    // event, and let the text reply be synthesized alongside it.
+    const imageAsk = agentContext.toolsUsed.find((t: any) => t?.tool === 'image_generate' && t.ok);
+    if (imageAsk) {
+      try {
+        const pipeline = getSOHAMPipeline();
+        const imageResult = await pipeline.generate({
+          userPrompt: imageAsk.query || userMessage,
+          userId: userId || 'anonymous',
+        });
+        sseWrite(res, { type: 'image', url: imageResult.url, provider: imageResult.provider, text: "✨ Here's your image!" });
+      } catch (imageError) {
+        logger.warn('[Stream] Mixed-plan image generation failed', {
+          error: imageError instanceof Error ? imageError.message : String(imageError),
+        });
+      }
     }
 
     // ── Routing ──────────────────────────────────────────────────────────────
@@ -272,7 +318,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     if (fullText) {
       persistSohamMemory({ userId, userMessage, assistantMessage: fullText })
         .catch(err => logger.warn('[Stream] Memory persist failed', { error: err instanceof Error ? err.message : String(err) }));
-      extractLongTermMemoriesAsync(userId, userMessage, fullText);
+      if (agentContext.agentMemoryExtract !== false) extractLongTermMemoriesAsync(userId, userMessage, fullText);
       triggerAutoLearnAsync({ userMessage, assistantMessage: fullText, toolResults: agentContext.toolsUsed, modelUsed });
     }
 
