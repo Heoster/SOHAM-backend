@@ -18,6 +18,7 @@ import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
 import { collectResearchSources } from '../tools/agent-tools';
 import { stripInjectedContext } from '../utils/clean-message';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
+import { sanitizeModelOutput } from '../utils/sanitize-model-output';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
 import { parseGroqToolOptions } from '../routing/groq-tool-options';
@@ -171,17 +172,22 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       ...groqToolOptions,
     });
 
+    // Strip any tool-call/reasoning markup the model leaked as plain text
+    // (free-router models do this) before showing/persisting it.
+    const responseText = sanitizeModelOutput(result.response.text)
+      || 'I had trouble generating a response — please try again.';
+
     // ── Non-blocking post-processing ────────────────────────────────────────
     persistSohamMemory({
       userId,
       userMessage,
-      assistantMessage: result.response.text,
+      assistantMessage: responseText,
       metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed },
     }).catch(() => {});
-    if (agentContext.agentMemoryExtract !== false) extractLongTermMemoriesAsync(userId, userMessage, result.response.text);
+    if (agentContext.agentMemoryExtract !== false) extractLongTermMemoriesAsync(userId, userMessage, responseText);
     triggerAutoLearnAsync({
       userMessage,
-      assistantMessage: result.response.text,
+      assistantMessage: responseText,
       toolResults: agentContext.toolsUsed,
       modelUsed: result.modelUsed,
       previousAssistantMessage: history.length > 0 ? history[history.length - 1]?.content : undefined,
@@ -214,7 +220,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
 
     res.json({
       success: true,
-      content: result.response.text,
+      content: responseText,
       modelUsed: result.modelUsed,
       autoRouted: result.fallbackTriggered,
       toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' }))],
