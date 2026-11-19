@@ -195,6 +195,7 @@ Rules:
 - Wikipedia is for quick encyclopedic background; pair it with web_search when freshness matters.
 - play_video for any "play"/"watch" request — including "them"/"it", which may reference a previous list.
 - chart ONLY for real numbers or well-known published figures. image_generate ONLY for artwork — never for data.
+- timer / alarm / reminder / countdown requests: tools=[] — they are pure clock math answered with the TODAY line in the system prompt (state the end time; SOHAM has no timer tool and cannot alert anyone).
 - memory_extract=false ONLY when the turn has nothing durable to remember (greeting, thanks, one-word reply).
 - Never invent tool names. Use the exact names from the list.
 

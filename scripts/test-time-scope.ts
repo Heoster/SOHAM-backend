@@ -43,5 +43,12 @@ const scopedNoTail = scopeInjectedClockInstructions(noTail);
 assert.ok(!/Answer every question/i.test(scopedNoTail), 'bare imperative variant must also be rewritten');
 assert.match(scopedNoTail, /Never volunteer or restate/i);
 
+// ─── 4) Timer honesty — SOHAM must know it has no timer/alarm/reminder ───────
+assert.match(prompt, /NO timer, alarm or reminder tool/i, 'timer limitation must be stated explicitly');
+assert.match(prompt, /cannot message you first/i, 'proactive-messaging limitation present');
+assert.match(prompt, /I'll let you know when it's up/i, 'the exact forbidden phrase must be listed as forbidden');
+assert.match(prompt, /phone's timer app/i, 'must point at the device timer for real alerts');
+assert.match(prompt, /how much time is left/i, 'must offer the countdown it CAN do');
+
 console.log('time-scope checks passed ✔');
 process.exit(0);
