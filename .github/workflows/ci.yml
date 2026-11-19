@@ -39,3 +39,6 @@ jobs:
 
       - name: Run Cloudflare integration tests (mocked)
         run: npm run test:cloudflare
+
+      - name: Run output sanitizer checks
+        run: npm run test:sanitizer

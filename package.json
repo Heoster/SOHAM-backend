@@ -16,7 +16,8 @@
     "test:auto-router": "node -r ts-node/register/transpile-only scripts/test-auto-router.ts",
     "lint": "eslint . --ext .ts",
     "health": "node dist/server.js --health",
-    "prod": "NODE_ENV=production node dist/server.js"
+    "prod": "NODE_ENV=production node dist/server.js",
+    "test:sanitizer": "node -r ts-node/register/transpile-only scripts/test-output-sanitizer.ts"
   },
   "dependencies": {
     "@types/cors": "^2.8.17",

@@ -32,6 +32,7 @@ import { resolveAutoRoute } from '../routing/auto-router';
 import { logger } from '../utils/logger';
 import { parseGroqToolOptions } from '../routing/groq-tool-options';
 import { stripInjectedContext } from '../utils/clean-message';
+import { TokenOutputSanitizer } from '../utils/sanitize-model-output';
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 
@@ -279,6 +280,9 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     let modelUsed = 'unknown';
     let autoRouted = false;
     let fullText = '';
+    // Free-router models sometimes leak tool-call/reasoning markup as tokens.
+    // Filter it live — the client renders tokens as they arrive and cannot retract.
+    const outputSanitizer = new TokenOutputSanitizer();
 
     const tokenStream = streamWithSmartFallback(
       {
@@ -299,9 +303,24 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     while (!streamResult.done) {
       if (clientGone) break;
       const token = streamResult.value as string;
-      fullText += token;
-      sseWrite(res, { type: 'token', text: token });
+      const clean = outputSanitizer.push(token);
+      if (clean) {
+        fullText += clean;
+        sseWrite(res, { type: 'token', text: clean });
+      }
       streamResult = await tokenStream.next();
+    }
+    const tail = outputSanitizer.flush();
+    if (tail) {
+      fullText += tail;
+      sseWrite(res, { type: 'token', text: tail });
+    }
+    fullText = fullText.trim();
+    // If the model produced nothing but markup, the client is staring at an empty
+    // bubble — say something rather than nothing.
+    if (!fullText && !clientGone) {
+      fullText = 'I had trouble generating a response — please try again.';
+      sseWrite(res, { type: 'token', text: fullText });
     }
 
     // Capture final metadata from generator return value
