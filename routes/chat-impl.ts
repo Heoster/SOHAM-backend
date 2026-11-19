@@ -15,10 +15,11 @@ import { generateWithSmartFallback } from '../routing/smart-fallback';
 import { buildSohamPromptContext, persistSohamMemory, extractLongTermMemoriesAsync, triggerAutoLearnAsync } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
 import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
-import { collectResearchSources } from '../tools/agent-tools';
+import { collectResearchSources, runToolByName } from '../tools/agent-tools';
 import { stripInjectedContext } from '../utils/clean-message';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { sanitizeModelOutput } from '../utils/sanitize-model-output';
+import { parseActionJson } from '../utils/action-json';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
 import { parseGroqToolOptions } from '../routing/groq-tool-options';
@@ -174,28 +175,65 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
 
     // Strip any tool-call/reasoning markup the model leaked as plain text
     // (free-router models do this) before showing/persisting it.
-    const responseText = sanitizeModelOutput(result.response.text)
-      || 'I had trouble generating a response — please try again.';
+    let responseText = sanitizeModelOutput(result.response.text);
+    let finalModelUsed = result.modelUsed;
+    let rescueSources: Array<{ title: string; url: string; tool: string }> = [];
+    let rescuedTool: { tool: string; query: string; ok: boolean; output: string; sources?: Array<{ title: string; url: string }> } | null = null;
+
+    // ── Rescue: the model printed a raw action descriptor instead of replying
+    // (e.g. {"action":"web_search","query":"…"} — seen from openrouter-free-router).
+    // SOHAM executes tools itself, so run the requested tool for real and
+    // re-answer with its result instead of showing the user raw JSON.
+    const actionReq = parseActionJson(result.response.text);
+    if (actionReq) {
+      try {
+        const toolResult = await runToolByName(actionReq.tool, actionReq.query, convertedHistory);
+        rescueSources = collectResearchSources([toolResult]);
+        rescuedTool = { tool: toolResult.tool, query: toolResult.query, ok: toolResult.ok, output: toolResult.output, sources: toolResult.sources };
+        const rescuePrompt = `${agentContext.prompt}\n\nSOHAM tool result (${actionReq.tool} → ${actionReq.query}):\n${toolResult.output}\n\nUsing the tool result above, answer the user's original question directly and conversationally. Do not output JSON, "action" objects, or any tool-call syntax — write only the final answer.`;
+        const rescue = await generateWithSmartFallback({
+          prompt: rescuePrompt,
+          systemPrompt,
+          history: convertedHistory,
+          preferredModelId,
+          modelChain,
+          category: routingCategory,
+          params: generationParams,
+          ...groqToolOptions,
+        });
+        const rescued = sanitizeModelOutput(rescue.response.text);
+        responseText = (rescued && !parseActionJson(rescue.response.text))
+          ? rescued
+          : `Here's what I found:\n\n${toolResult.output}`;
+        finalModelUsed = rescue.modelUsed;
+      } catch (rescueError) {
+        console.warn('[Chat] Action-JSON rescue failed:', rescueError instanceof Error ? rescueError.message : rescueError);
+      }
+    }
+    if (!responseText) responseText = 'I had trouble generating a response — please try again.';
 
     // ── Non-blocking post-processing ────────────────────────────────────────
     persistSohamMemory({
       userId,
       userMessage,
       assistantMessage: responseText,
-      metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed },
+      metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? []), ...(rescuedTool ? [rescuedTool.tool] : [])], modelUsed: finalModelUsed },
     }).catch(() => {});
     if (agentContext.agentMemoryExtract !== false) extractLongTermMemoriesAsync(userId, userMessage, responseText);
     triggerAutoLearnAsync({
       userMessage,
       assistantMessage: responseText,
-      toolResults: agentContext.toolsUsed,
-      modelUsed: result.modelUsed,
+      toolResults: rescuedTool ? [...agentContext.toolsUsed, rescuedTool as any] : agentContext.toolsUsed,
+      modelUsed: finalModelUsed,
       previousAssistantMessage: history.length > 0 ? history[history.length - 1]?.content : undefined,
     });
 
     // Flattened, deduped research sources (same payload shape as the SSE
     // `sources` event). Per-tool sources remain nested inside toolsUsed too.
-    const researchSources = collectResearchSources(agentContext.toolsUsed);
+    const seenRescueUrls = new Set<string>();
+    const researchSources = [...collectResearchSources(agentContext.toolsUsed), ...rescueSources]
+      .filter(s => (seenRescueUrls.has(s.url) ? false : (seenRescueUrls.add(s.url), true)))
+      .slice(0, 12);
 
     // A chart that was part of a mixed plan (chart + other tools) rides this
     // same response — the SVG goes out as imageUrl/imageProvider so the client
@@ -221,9 +259,9 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     res.json({
       success: true,
       content: responseText,
-      modelUsed: result.modelUsed,
+      modelUsed: finalModelUsed,
       autoRouted: result.fallbackTriggered,
-      toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' }))],
+      toolsUsed: [...agentContext.toolsUsed, ...(result.response.toolsUsed ?? []).map(tool => ({ tool, source: 'groq' })), ...(rescuedTool ? [{ tool: rescuedTool.tool, query: rescuedTool.query, ok: rescuedTool.ok, output: rescuedTool.output, source: 'rescue' }] : [])],
       ...(mixedChart ? { imageUrl: mixedChart.imageDataUri, imageProvider: 'soham-chart' } : {}),
       ...(mixedImage ? { imageUrl: mixedImage.url, imageProvider: mixedImage.provider } : {}),
       sources: researchSources,

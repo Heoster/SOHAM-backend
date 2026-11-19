@@ -68,6 +68,25 @@ const OPEN_TAG_RE = new RegExp(
   'gi',
 );
 
+// JSON object with an "action" key naming a tool — the ReAct-style payload
+// weak free models print instead of answering (see utils/action-json.ts).
+// Allows one level of nesting ("args": {…}); anything deeper is left alone, as
+// is any object without an "action" key. The whole-output rescue case is
+// handled by parseActionJson() in the routes.
+const ACTION_JSON_RE = /\{(?:[^{}]|\{[^{}]*\})*"action"(?:[^{}]|\{[^{}]*\})*\}/gi;
+
+
+/** True when every '{' in the fragment has a matching '}'. */
+function balancedBraces(s: string): boolean {
+  let depth = 0;
+  for (const ch of s) {
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth -= 1;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
 /** One-shot cleanup of a complete model response. */
 export function sanitizeModelOutput(raw: string): string {
   if (!raw) return raw;
@@ -85,6 +104,13 @@ export function sanitizeModelOutput(raw: string): string {
   text = text.replace(UNTERMINATED_BLOCK_RE, '');
   // Stray open/close tags without a pair.
   text = text.replace(ANY_TAG_RE, '');
+  // Raw action-JSON payloads the model printed instead of answering.
+  text = text.replace(ACTION_JSON_RE, '');
+  // Trailing unterminated action-JSON (stream cut off inside the payload).
+  text = text.replace(/\{(?:[^{}]|\{[^{}]*\})*"action"[\s\S]*$/i, m =>
+    balancedBraces(m) ? m : '');
+  // Empty code fences left behind by removed payloads (```json \n\n ```)
+  text = text.replace(/```[a-z0-9]*[ \t]*(?:\n\s*)*```/gi, '');
   // Orphaned opener fragments split by other removals (e.g. "<" left behind).
   text = text.replace(/<[A-Za-z_][\w-]*\s*$/g, '').replace(/<\s*$/g, '');
   // A lone "<" line from the observed failure mode.
@@ -131,6 +157,14 @@ export class TokenOutputSanitizer {
         continue;
       }
 
+      // ── Drop a complete action-JSON object if one is pending ─────────────
+      const actionIdx = this.findNextActionJson(this.pending);
+      if (actionIdx) {
+        out += this.pending.slice(0, actionIdx.index);
+        this.pending = this.pending.slice(actionIdx.end);
+        continue;
+      }
+
       // ── Find the next tool/reasoning tag in the pending buffer ───────────
       const tag = this.findNextTag(this.pending);
       if (tag) {
@@ -171,6 +205,13 @@ export class TokenOutputSanitizer {
     return haystack.toLowerCase().indexOf(needle.toLowerCase());
   }
 
+  private findNextActionJson(text: string): { index: number; end: number } | null {
+    const re = new RegExp(ACTION_JSON_RE.source, 'gi');
+    const match = re.exec(text);
+    if (!match) return null;
+    return { index: match.index, end: match.index + match[0].length };
+  }
+
   private findNextTag(text: string): { index: number; end: number; name: string; closing: boolean } | null {
     const re = new RegExp(ANY_TAG_RE.source, 'gi');
     const match = re.exec(text);
@@ -187,6 +228,12 @@ export class TokenOutputSanitizer {
   }
 
   private holdbackLength(text: string): number {
+    // ── Partial action-JSON first: the outermost unterminated '{' that could
+    // still grow into an action descriptor. Checked before tag holdback so an
+    // earlier "<…>" in the text can't mask it.
+    const actionStart = this.actionJsonHoldStart(text);
+    if (actionStart !== -1) return text.length - actionStart;
+
     const lt = text.lastIndexOf('<');
     if (lt === -1) return 0;
     const tail = text.slice(lt);
@@ -207,5 +254,34 @@ export class TokenOutputSanitizer {
     // "<" + space (e.g. "< latest phones…") from the observed failure mode.
     if (/^<\s+[^\n]{0,120}$/.test(tail)) return tail.length;
     return 0;
+  }
+
+  /**
+   * Index of the outermost unterminated '{' that plausibly starts an
+   * action-JSON object, or -1. Holds from there so streaming JSON can't leak
+   * partial objects before the closing '}' arrives.
+   */
+  private actionJsonHoldStart(text: string): number {
+    if (!text.includes('{')) return -1;
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '{') {
+        if (depth === 0) start = i;
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth <= 0) { depth = 0; start = -1; }
+      }
+    }
+    if (depth === 0 || start === -1) return -1;
+    const tail = text.slice(start);
+    if (tail.length > 600) return -1;
+    // Hold anything short starting with '{' (might still become an action
+    // object) — once it outgrows that, require an "action" key to be present.
+    if (/^\{[\s\S]{0,40}$/.test(tail)) return start;
+    if (tail.includes('"action"')) return start;
+    return -1;
   }
 }

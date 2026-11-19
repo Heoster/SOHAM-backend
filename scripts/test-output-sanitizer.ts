@@ -87,4 +87,73 @@ console.log('✔ nested blocks removed');
   console.log('✔ stray closing tags dropped, text kept');
 }
 
+// ─── Action-JSON: the exact production payload (openrouter-free-router) ─────
+const ACTION_OBSERVED = '{\n  "action": "web_search",\n  "query": "Is Meerut a metro city in India"\n}';
+assert.equal(sanitizeModelOutput(ACTION_OBSERVED), '', 'whole action-JSON payload must be removed');
+
+for (const size of [1, 3, 7, 16, 64]) {
+  const s = new TokenOutputSanitizer();
+  let out = '';
+  for (let i = 0; i < ACTION_OBSERVED.length; i += size) out += s.push(ACTION_OBSERVED.slice(i, i + size));
+  out += s.flush();
+  assert.equal(out.trim(), '', `chunk size ${size}: action-JSON must not leak, got: ${JSON.stringify(out)}`);
+}
+console.log('✔ action-JSON payload removed one-shot and streamed');
+
+// fenced variant
+assert.equal(sanitizeModelOutput('```json\n{"action": "web_search", "query": "Meerut"}\n```'), '');
+console.log('✔ fenced action-JSON removed');
+
+// interleaved with a real answer — answer survives, payload dropped
+{
+  const s = new TokenOutputSanitizer();
+  const chunks = ['Meerut is ', 'a city in UP. ', '{"action": "web_search", "query": "meerut"}', ' (~1.5M pop.)'];
+  let out = '';
+  for (const c of chunks) out += s.push(c);
+  out += s.flush();
+  assert.equal(out, 'Meerut is a city in UP.  (~1.5M pop.)');
+  console.log('✔ interleaved action-JSON dropped mid-stream');
+}
+
+// nested args variant: {"action":"web_search","args":{"query":"x"}}
+{
+  const s = new TokenOutputSanitizer();
+  let out = '';
+  const payload = '{"action": "web_search", "args": {"query": "Is Meerut a metro city in India"}}';
+  for (let i = 0; i < payload.length; i += 2) out += s.push(payload.slice(i, i + 2));
+  out += s.flush();
+  assert.equal(out.trim(), '', `nested action-JSON must not leak, got: ${JSON.stringify(out)}`);
+  assert.equal(sanitizeModelOutput('Answer. ' + payload + ' Done.'), 'Answer.  Done.');
+  console.log('✔ nested-args action-JSON removed (stream + one-shot)');
+}
+
+// legit JSON without "action" survives
+{
+  const JSONSEB = 'Here is an example config: {"host": "localhost", "port": 3000} — save it.';
+  assert.equal(sanitizeModelOutput(JSONSEB), JSONSEB);
+  console.log('✔ JSON without action key survives');
+}
+
+// ─── Rescue parser: parseActionJson ──────────────────────────────────────────
+import { parseActionJson } from '../utils/action-json';
+assert.deepEqual(parseActionJson(ACTION_OBSERVED), { tool: 'web_search', query: 'Is Meerut a metro city in India' });
+assert.deepEqual(parseActionJson('{"action": "search", "query": "q"}'), { tool: 'web_search', query: 'q' });
+assert.deepEqual(parseActionJson('{"action":"web_search","args":{"query":"nested q"}}'), { tool: 'web_search', query: 'nested q' });
+assert.deepEqual(parseActionJson('\`\`\`json\n{"action": "news_search", "query": "Meerut metro news"}\n\`\`\`'), { tool: 'news_search', query: 'Meerut metro news' });
+assert.deepEqual(parseActionJson('{"tool": "wikipedia", "query": "Meerut"}'), { tool: 'wikipedia', query: 'Meerut' });
+assert.equal(parseActionJson('Meerut is a metro city.'), null, 'prose must not parse as action');
+assert.equal(parseActionJson('{"action": "image_generate", "query": "a cat"}'), null, 'image_generate is not a text-rescue tool');
+assert.equal(parseActionJson('{"action": "dance_party", "query": "x"}'), null, 'unknown tool rejected');
+assert.equal(parseActionJson('{"query": "no action key"}'), null);
+console.log('✔ parseActionJson cases');
+
+// ─── Prompt teaches the model not to emit these in the first place ───────────
+import { buildSystemPrompt } from '../routes/system-prompt';
+const prompt = buildSystemPrompt('helpful', 'intermediate');
+assert.match(prompt, /HOW TOOLS WORK/i, 'tools-are-run-by-the-backend section present');
+assert.match(prompt, /never call a tool yourself/i, 'explicit never-call-tools rule present');
+assert.match(prompt, /\{"action": "web_search"/, 'forbidden action-JSON shape shown as forbidden');
+assert.match(prompt, /Whatever you write IS the user's visible message/i, 'visible-message rule present');
+console.log('✔ system prompt forbids raw tool-call output');
+
 console.log('\noutput-sanitizer checks passed ✔');
