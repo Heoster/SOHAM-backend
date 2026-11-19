@@ -25,7 +25,7 @@ import {
 } from '../core/orchestrator';
 import { getIntentDetector } from '../core/intent-detector';
 import { planToolCalls, isSohamAgentDisabled } from '../core/soham-agent';
-import { collectResearchSources } from '../tools/agent-tools';
+import { collectResearchSources, runToolByName } from '../tools/agent-tools';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
@@ -33,6 +33,7 @@ import { logger } from '../utils/logger';
 import { parseGroqToolOptions } from '../routing/groq-tool-options';
 import { stripInjectedContext } from '../utils/clean-message';
 import { TokenOutputSanitizer } from '../utils/sanitize-model-output';
+import { parseActionJson } from '../utils/action-json';
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 
@@ -280,6 +281,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     let modelUsed = 'unknown';
     let autoRouted = false;
     let fullText = '';
+    let rawFullText = '';
     // Free-router models sometimes leak tool-call/reasoning markup as tokens.
     // Filter it live — the client renders tokens as they arrive and cannot retract.
     const outputSanitizer = new TokenOutputSanitizer();
@@ -303,6 +305,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     while (!streamResult.done) {
       if (clientGone) break;
       const token = streamResult.value as string;
+      rawFullText += token;
       const clean = outputSanitizer.push(token);
       if (clean) {
         fullText += clean;
@@ -316,15 +319,78 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
       sseWrite(res, { type: 'token', text: tail });
     }
     fullText = fullText.trim();
-    // If the model produced nothing but markup, the client is staring at an empty
-    // bubble — say something rather than nothing.
-    if (!fullText && !clientGone) {
+
+    // ── Rescue: the model printed a raw action descriptor instead of replying
+    // (e.g. {"action":"web_search","query":"…"} — seen from openrouter-free-router).
+    // The backend executes SOHAM tools itself before generation, so this is never
+    // a valid answer: run the requested tool for real, then re-answer with its
+    // result instead of showing the user JSON.
+    const actionReq = parseActionJson(rawFullText);
+    let rescued = false;
+    if (actionReq && !clientGone) {
+      rescued = true;
+      sseWrite(res, { type: 'status', text: 'Running the requested lookup…' });
+      try {
+        const toolResult = await runToolByName(actionReq.tool, actionReq.query, convertedHistory);
+        const rescueSources = collectResearchSources([toolResult]);
+        if (rescueSources.length) sseWrite(res, { type: 'sources', sources: rescueSources });
+
+        const rescuePrompt = `${agentContext.prompt}\n\nSOHAM tool result (${actionReq.tool} → ${actionReq.query}):\n${toolResult.output}\n\nUsing the tool result above, answer the user's original question directly and conversationally. Do not output JSON, "action" objects, or any tool-call syntax — write only the final answer.`;
+        fullText = '';
+        const rescueSanitizer = new TokenOutputSanitizer();
+        const rescueStream = streamWithSmartFallback(
+          {
+            prompt: rescuePrompt,
+            systemPrompt,
+            history: convertedHistory,
+            preferredModelId,
+            modelChain,
+            category: routingCategory,
+            params: generationParams,
+            ...groqToolOptions,
+          },
+          (selectedModel) => { modelUsed = selectedModel; }
+        );
+        let rescueResult = await rescueStream.next();
+        while (!rescueResult.done) {
+          if (clientGone) break;
+          const raw = rescueResult.value as string;
+          const clean = rescueSanitizer.push(raw);
+          if (clean) {
+            fullText += clean;
+            sseWrite(res, { type: 'token', text: clean });
+          }
+          rescueResult = await rescueStream.next();
+        }
+        const rescueTail = rescueSanitizer.flush();
+        if (rescueTail) {
+          fullText += rescueTail;
+          sseWrite(res, { type: 'token', text: rescueTail });
+        }
+        fullText = fullText.trim();
+        // If the model STILL produces nothing but markup/JSON, give the tool's
+        // grounded output verbatim rather than an empty bubble or raw JSON.
+        if (!fullText || parseActionJson(fullText)) {
+          fullText = `Here's what I found:\n\n${toolResult.output}`;
+          sseWrite(res, { type: 'token', text: fullText });
+        }
+      } catch (rescueError) {
+        logger.warn('[Stream] Action-JSON rescue failed', { error: rescueError instanceof Error ? rescueError.message : String(rescueError) });
+        if (!fullText) {
+          fullText = 'I had trouble generating a response — please try again.';
+          sseWrite(res, { type: 'token', text: fullText });
+        }
+      }
+    } else if (!fullText && !clientGone) {
+      // If the model produced nothing but markup, the client is staring at an empty
+      // bubble — say something rather than nothing.
       fullText = 'I had trouble generating a response — please try again.';
       sseWrite(res, { type: 'token', text: fullText });
     }
 
-    // Capture final metadata from generator return value
-    if (streamResult.done && streamResult.value) {
+    // Capture final metadata from generator return value — skipped when the
+    // rescue path ran, which re-selects the model itself via its own callback.
+    if (!rescued && streamResult.done && streamResult.value) {
       const meta = streamResult.value as { modelUsed: string; fallbackTriggered: boolean; toolsUsed?: string[] };
       modelUsed = meta.modelUsed ?? modelUsed;
       autoRouted = meta.fallbackTriggered ?? false;
