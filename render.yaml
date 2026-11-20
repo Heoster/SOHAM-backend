@@ -3,11 +3,11 @@ services:
     name: soham-backend-server
     region: oregon
     env: node
-    buildCommand: npm install && npm run build
+    buildCommand: npm ci && npm run build
     startCommand: npm start
     plan: free
     autoDeployTrigger: checksPass
-    healthCheckPath: /api/health
+    healthCheckPath: /api/health/live
     envVars:
       - key: NODE_VERSION
         value: 20
@@ -49,6 +49,13 @@ services:
         sync: false
       - key: UPSTASH_VECTOR_REST_TOKEN
         sync: false
+      # Distributed rate limiting for multi-instance deployments (strongly
+      # recommended once you scale beyond 1 instance). Optional — without it,
+      # per-instance in-memory limiting is used. Same Upstash account as Vector.
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
       - key: YOU_API_KEY
         sync: false
       - key: TAVILY_API_KEY
@@ -69,3 +76,23 @@ services:
         sync: false
       - key: ALPHA_VANTAGE_API_KEY
         sync: false
+
+# ── Horizontal scaling (opt-in, do not enable blindly) ──────────────────────
+# Render does NOT load-balance on the free plan. To scale to multiple
+# instances behind Render's built-in load balancer you need a paid plan.
+# To opt in, copy the service block above into a second service or set:
+#
+#   services:
+#     - type: web
+#       name: soham-backend-server
+#       ...
+#       plan: standard        # or higher; NOT applied by this file while commented
+#       numInstances: 2       # paid plans only
+#
+# Prerequisites before >1 instance:
+#   1. UPSTASH_REDIS_REST_URL / TOKEN set (distributed rate limiter)
+#   2. ALLOWED_ORIGINS explicitly set (prod default is now fail-closed)
+#   3. Statelessness: this service is stateless apart from the rate limiter —
+#      chat history lives in Supabase/Upstash, not in process memory.
+#   4. Health checks: /api/health/live (liveness) and /api/health/ready (readiness)
+#      are unauthenticated and cheap — wire them into any LB you put in front.

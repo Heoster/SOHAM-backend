@@ -15,7 +15,7 @@
  * 10. checkedAt       — ISO timestamp of this health check run
  *
  * Two modes:
- *   GET /api/health          → fast config + model availability report
+ *   GET /api/health          → minimal liveness (full report needs Bearer auth)
  *   GET /api/health/live     → liveness probe
  *   GET /api/health/ready    → model-provider readiness probe
  *   GET /api/health?probe=1  → authenticated live probes (may consume provider quota)
@@ -29,6 +29,7 @@
 import type { Request, Response } from 'express';
 import * as os from 'os';
 import { getModelRegistry } from '../routing/model-registry';
+import { isValidBearer } from '../utils/auth';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -403,13 +404,26 @@ const ALL_ENDPOINTS: EndpointHealth[] = [
 export async function healthHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
   const probeMode = req.query['probe'] === '1' || req.query['probe'] === 'true';
+  const authed = isValidBearer(req.get('authorization'));
+
+  // Unauthenticated callers (and load balancers polling /api/health) get only a
+  // minimal liveness payload — the detailed report exposes server internals
+  // (configured credentials, memory, model catalog) and requires the API key.
+  if (!authed) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).json({
+      status: 'ok',
+      service: 'soham-backend',
+      version: '1.0.0',
+      uptimeSeconds: Math.floor(process.uptime()),
+      checkedAt: new Date().toISOString(),
+      note: 'Minimal public health. Send Authorization: Bearer <SOHAM_API_KEY> for the full report.',
+    });
+    return;
+  }
+
   if (probeMode) {
-    const expected = process.env.SOHAM_API_KEY;
-    if (!expected || req.get('authorization') !== `Bearer ${expected}`) {
-      res.setHeader('Cache-Control', 'no-store');
-      res.status(401).json({ status: 'unauthorized', error: 'Deep provider probes require the backend API key.' });
-      return;
-    }
+    // (authed already true here) — proceed with deep provider probes
   }
 
   // ── System info ─────────────────────────────────────────────────────────────
