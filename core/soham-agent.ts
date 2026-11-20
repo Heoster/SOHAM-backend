@@ -246,7 +246,10 @@ export async function planToolCalls(
     const generateText = deps.generateText ?? defaultGenerateText;
     const raw = await Promise.race([
       generateText({ prompt, systemPrompt: PLANNER_SYSTEM }),
-      new Promise<null>(resolve => { plannerTimer = setTimeout(() => resolve(null), 10_000); }),
+      // A plan is a tiny JSON decision (maxOutputTokens 512) — healthy providers
+      // answer in <2s. When the free pool is stalling, don't burn 10s of dead
+      // air before the regex fallback engages.
+      new Promise<null>(resolve => { plannerTimer = setTimeout(() => resolve(null), 3_500); }),
     ]);
     if (!raw) { logger.warn('[Agent] Planner timed out or returned nothing'); return null; }
     const plan = normalizePlan(parsePlanJson(raw));
