@@ -181,6 +181,7 @@ export async function buildSohamPromptContext(input: {
     publicKnowledge$,
     realtimeCtx$,
     documentHits$,
+    realtimeChunks$,
   ] = await Promise.allSettled([
     runSohamAgent(userMessage, historyForTools, { plan: input.agentPlan, userId }),
     queryRagContext(userId, userMessage, 5),
@@ -192,10 +193,8 @@ export async function buildSohamPromptContext(input: {
       ? getRealtimeContext(userMessage, realtimeQueryType as any)
       : Promise.resolve({ datetime: getCurrentDateTimeContext(), liveData: undefined }),
     searchDocuments(userId, userMessage, 4),
+    queryRealtimeChunks(message, 3),
   ]);
-
-  // Realworld cache — fast Upstash read, no external API
-  const realtimeChunks = await queryRealtimeChunks(message, 3).catch(() => [] as string[]);
 
   // Unwrap results with graceful degradation
   const agentRun          = settled(agentRun$,
@@ -210,6 +209,8 @@ export async function buildSohamPromptContext(input: {
     { datetime: getCurrentDateTimeContext(), liveData: undefined },
     'realtime', degradedLayers);
   const documentHits      = settled(documentHits$,    [],    'documents',    degradedLayers);
+  // Realworld cache — Upstash read (may embed via Google first) — parallel now, not serial
+  const realtimeChunks    = settled(realtimeChunks$,  [],    'realtime-chunks', degradedLayers);
 
   const toolsUsed = agentRun.results;
   const contextBlocks: string[] = [];

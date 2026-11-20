@@ -24,7 +24,9 @@ interface CircuitState {
 
 const circuitBreakers = new Map<string, CircuitState>();
 const providerCooldowns = new Map<ProviderType, number>();
-const PROVIDER_COOLDOWN_MS = 30_000;
+const PROVIDER_COOLDOWN_MS = 30_000;        // transient network blips
+const PROVIDER_STALL_COOLDOWN_MS = 120_000; // first-token stalls / empty streams:
+                                            // same failure pool as the circuit breaker's 2-min cooldown
 
 // ── Per-attempt stream watchdog ───────────────────────────────────────────────
 // A provider can accept a streaming request, hold the connection open and never
@@ -114,7 +116,9 @@ function isProviderCoolingDown(provider: ProviderType): boolean {
 function recordProviderFailure(provider: ProviderType, error: unknown): void {
   if (!(error instanceof AIServiceError)) {
     const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-    if (/fetch failed|network|timeout|econn|etimedout|stalled|empty stream|empty completion/.test(message)) {
+    if (/stalled|empty stream|empty completion/.test(message)) {
+      providerCooldowns.set(provider, Date.now() + PROVIDER_STALL_COOLDOWN_MS);
+    } else if (/fetch failed|network|timeout|econn|etimedout/.test(message)) {
       providerCooldowns.set(provider, Date.now() + PROVIDER_COOLDOWN_MS);
     }
     return;
