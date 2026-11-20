@@ -19,9 +19,12 @@ interface IntentPolicy {
 
 const DEFAULT: IntentPolicy = {
   category: 'general',
+  // groq-qwen3.8-27b sits between the two GPT-OSS models so a TPM hit on 20B
+  // falls to Qwen before trying Google/OpenRouter. This prevents the chain from
+  // exhausting all options when 20B is rate-limited and Gemini is slow.
   preferred: [
-    'groq-gpt-oss-20b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'openrouter-free-router',
-    'cloudflare-granite-4-micro', 'cloudflare-gpt-oss-20b',
+    'groq-gpt-oss-20b', 'groq-qwen3.8-27b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite',
+    'openrouter-free-router', 'cloudflare-granite-4-micro', 'cloudflare-gpt-oss-20b',
   ],
   temperature: 0.7,
   maxOutputTokens: 2048,
@@ -34,8 +37,9 @@ const POLICIES: Partial<Record<IntentType, IntentPolicy>> = {
   CODE_GENERATION: {
     category: 'coding',
     preferred: [
-      'groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite',
-      'openrouter-free-router', 'cloudflare-gpt-oss-20b', 'cloudflare-granite-4-micro',
+      'groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'groq-gpt-oss-20b', 'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite', 'openrouter-free-router', 'cloudflare-gpt-oss-20b',
+      'cloudflare-granite-4-micro',
     ],
     temperature: 0.25,
     maxOutputTokens: 4096,
@@ -43,8 +47,9 @@ const POLICIES: Partial<Record<IntentType, IntentPolicy>> = {
   EXPLANATION: {
     category: 'general',
     preferred: [
-      'groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite',
-      'openrouter-free-router', 'cloudflare-gpt-oss-20b', 'cloudflare-granite-4-micro',
+      'groq-gpt-oss-120b', 'groq-qwen3.8-27b', 'groq-gpt-oss-20b', 'gemini-3.6-flash',
+      'gemini-3.5-flash-lite', 'openrouter-free-router', 'cloudflare-gpt-oss-20b',
+      'cloudflare-granite-4-micro',
     ],
     temperature: 0.55,
     maxOutputTokens: 4096,
@@ -59,8 +64,9 @@ const POLICIES: Partial<Record<IntentType, IntentPolicy>> = {
   FACT_CHECK: {
     category: 'general',
     preferred: [
-      'groq-gpt-oss-120b', 'groq-gpt-oss-20b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite',
-      'openrouter-free-router', 'cloudflare-gpt-oss-20b', 'cloudflare-granite-4-micro',
+      'groq-gpt-oss-120b', 'groq-gpt-oss-20b', 'groq-qwen3.8-27b', 'gemini-3.6-flash',
+      'gemini-3.5-flash-lite', 'openrouter-free-router', 'cloudflare-gpt-oss-20b',
+      'cloudflare-granite-4-micro',
     ],
     temperature: 0.15,
     maxOutputTokens: 2048,
