@@ -114,7 +114,7 @@ function isProviderCoolingDown(provider: ProviderType): boolean {
 function recordProviderFailure(provider: ProviderType, error: unknown): void {
   if (!(error instanceof AIServiceError)) {
     const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-    if (/fetch failed|network|timeout|econn|etimedout/.test(message)) {
+    if (/fetch failed|network|timeout|econn|etimedout|stalled|empty stream|empty completion/.test(message)) {
       providerCooldowns.set(provider, Date.now() + PROVIDER_COOLDOWN_MS);
     }
     return;
@@ -381,7 +381,8 @@ export async function generateWithSmartFallback(
     const model = modelsToTry[i];
 
     if (Date.now() - startTime > MAX_TOTAL_TIME) {
-      throw new Error('Request timeout - exceeded maximum processing time');
+      const detail = attempts.length ? ` — attempted ${attempts.slice(0, 3).map(a => a.modelId).join(', ')}` : '';
+      throw new Error(`Request timeout - exceeded maximum processing time${detail}`);
     }
 
     // Skip providers with invalid credentials or a temporary provider-wide outage.
@@ -469,7 +470,8 @@ export async function* streamWithSmartFallback(
     const model = modelsToTry[i];
 
     if (Date.now() - startTime > MAX_TOTAL_TIME) {
-      throw new Error('Request timeout - exceeded maximum processing time');
+      const detail = failures.length ? ` — attempted ${failures.slice(0, 3).join(' | ')}` : '';
+      throw new Error(`Request timeout - exceeded maximum processing time${detail}`);
     }
 
     if (!validateContextWindow(request.prompt, request.history || [], model)) {
@@ -565,7 +567,15 @@ export function getFriendlyErrorMessage(error: unknown): string {
   }
   
   if (errorMessage.includes('exceeded maximum processing time')) {
-    return 'SOHAM took too long to answer this one — the search and model providers were too slow. Please try again (or rephrase).';
+    return 'SOHAM took too long to answer this one — the model providers were too slow. Please try again (or rephrase).';
+  }
+
+  if (errorMessage.includes('No available model remained')) {
+    return 'The AI providers are unavailable right now after repeated failures — please try again in a few moments.';
+  }
+
+  if (errorMessage.includes('stalled before the first token') || errorMessage.includes('empty stream')) {
+    return 'The AI provider is not responding right now. Please try again in a few moments.';
   }
 
   if (errorMessage.includes('empty stream') || errorMessage.includes('empty completion')) {
