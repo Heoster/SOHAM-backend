@@ -8,6 +8,7 @@ import { getModelRegistry } from './model-registry';
 import { AIServiceError, type ModelConfig, type ModelCategory, type ProviderType } from './model-config';
 import { getAdapter } from '../adapters';
 import type { GenerateRequest, GenerateResponse } from '../adapters/types';
+import { applyTokenBudget } from './token-budget';
 
 // ── Circuit breaker ───────────────────────────────────────────────────────────
 // Tracks consecutive failures per model. After CIRCUIT_THRESHOLD failures
@@ -379,6 +380,26 @@ export async function generateWithSmartFallback(
     throw new Error('No models available. Please check your API key configuration.');
   }
 
+  // ── Token-budget reordering ───────────────────────────────────────────────
+  // Re-sort modelsToTry cheapest-capable-first and drop models whose context
+  // window is too small. Applied whenever no explicit single model was forced
+  // (preferredModelId with no chain = auto; a chain was already budget-sorted
+  // by chat-stream, but other callers — chat-impl, flows — have no chain).
+  const hasForcedSingleModel = !request.modelChain?.length && Boolean(request.preferredModelId);
+  if (!hasForcedSingleModel) {
+    const rawIds = modelsToTry.map(m => m.id);
+    const { chain: budgetIds } = applyTokenBudget(
+      request.prompt,
+      request.history ?? [],
+      rawIds,
+      request.params?.maxOutputTokens ?? 2048,
+    );
+    // Rebuild modelsToTry in the new order (applyTokenBudget already filtered)
+    const idSet = new Map(modelsToTry.map(m => [m.id, m]));
+    const reordered = budgetIds.map(id => idSet.get(id)).filter(Boolean) as ModelConfig[];
+    if (reordered.length > 0) modelsToTry.splice(0, modelsToTry.length, ...reordered);
+  }
+
   const maxModelsToTry = Math.min(modelsToTry.length, 12);
 
   for (let i = 0; i < maxModelsToTry; i++) {
@@ -465,6 +486,21 @@ export async function* streamWithSmartFallback(
 
   if (modelsToTry.length === 0) {
     throw new Error('No models available. Please check your API key configuration.');
+  }
+
+  // ── Token-budget reordering (same logic as generateWithSmartFallback) ────
+  const hasForcedSingleModelStream = !request.modelChain?.length && Boolean(request.preferredModelId);
+  if (!hasForcedSingleModelStream) {
+    const rawIds = modelsToTry.map(m => m.id);
+    const { chain: budgetIds } = applyTokenBudget(
+      request.prompt,
+      request.history ?? [],
+      rawIds,
+      request.params?.maxOutputTokens ?? 2048,
+    );
+    const idSet = new Map(modelsToTry.map(m => [m.id, m]));
+    const reordered = budgetIds.map(id => idSet.get(id)).filter(Boolean) as ModelConfig[];
+    if (reordered.length > 0) modelsToTry.splice(0, modelsToTry.length, ...reordered);
   }
 
   const maxModelsToTry = Math.min(modelsToTry.length, 12);
