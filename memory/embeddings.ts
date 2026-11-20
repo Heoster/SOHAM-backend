@@ -159,10 +159,15 @@ export async function getEmbeddingDimension(): Promise<number> {
 // no cost) and cache the answer.
 
 let cachedMode: 'auto-embed' | 'manual' | null = null;
+// In-flight probe promise — prevents concurrent callers from each firing their
+// own /query probe before the first one resolves, which caused the repeated
+// "data-only /query rejected" log lines on every request.
+let modeProbeInFlight: Promise<'auto-embed' | 'manual'> | null = null;
 
 /** Test hook — clears the cached mode. */
 export function resetUpstashModeCache(): void {
   cachedMode = null;
+  modeProbeInFlight = null;
 }
 
 /**
@@ -175,28 +180,38 @@ export async function getUpstashVectorMode(): Promise<'auto-embed' | 'manual'> {
   if (upstashMisconfigured) return (cachedMode = 'manual');
   const { url, token } = getUpstashBase();
   if (!url || !token) return (cachedMode = 'manual');
-  try {
-    const res = await fetch(`${url}/query`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ data: 'capability probe', topK: 1, includeMetadata: false, includeData: false }),
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) {
-      console.log('[Upstash] Built-in embedding model detected (data-only /query accepted) — auto-embed mode');
-      return (cachedMode = 'auto-embed');
-    }
-    const body = await res.text().catch(() => '');
-    if (looksLikeRedisEndpoint(body)) {
-      markUpstashMisconfigured(body);
-      return (cachedMode = 'manual');
-    }
-    console.warn(`[Upstash] data-only /query rejected (${res.status}: ${body.slice(0, 160)}) — manual-vector mode`);
-    return (cachedMode = 'manual');
-  } catch (err) {
-    console.warn('[Upstash] Mode probe failed — manual-vector mode', err instanceof Error ? err.message : err);
-    return (cachedMode = 'manual');
+
+  // All concurrent callers share the same in-flight probe so the /query fires once.
+  if (!modeProbeInFlight) {
+    modeProbeInFlight = (async (): Promise<'auto-embed' | 'manual'> => {
+      try {
+        const res = await fetch(`${url}/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ data: 'capability probe', topK: 1, includeMetadata: false, includeData: false }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          console.log('[Upstash] Built-in embedding model detected (data-only /query accepted) — auto-embed mode');
+          return (cachedMode = 'auto-embed');
+        }
+        const body = await res.text().catch(() => '');
+        if (looksLikeRedisEndpoint(body)) {
+          markUpstashMisconfigured(body);
+          return (cachedMode = 'manual');
+        }
+        console.warn(`[Upstash] data-only /query rejected (${res.status}: ${body.slice(0, 160)}) — manual-vector mode`);
+        return (cachedMode = 'manual');
+      } catch (err) {
+        console.warn('[Upstash] Mode probe failed — manual-vector mode', err instanceof Error ? err.message : err);
+        return (cachedMode = 'manual');
+      } finally {
+        modeProbeInFlight = null;
+      }
+    })();
   }
+
+  return modeProbeInFlight;
 }
 
 // ─── Semantic embedding (Google gemini-embedding-001, MRL) ────────────────────

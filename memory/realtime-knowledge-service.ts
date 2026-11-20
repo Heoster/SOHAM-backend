@@ -136,29 +136,33 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
 
   const id = `realworld:${result.type}:${Date.now()}:${randomUUID().slice(0, 8)}`;
   const expiresAt = new Date(Date.now() + result.ttlHours * 3_600_000).toISOString();
-  // Keep content short — Upstash has a ~40KB per-request limit and a manual
-  // embedding vector alone can be tens of KB, so data stays under ~600 chars.
-  const text = `[${result.type.toUpperCase()} — ${result.fetchedAt}] ${result.content.slice(0, 600)}`;
+  // Keep content short — a 1536-dim manual vector serialises to ~25 KB of JSON.
+  // Add metadata and even a 300-char preview and you are already near Upstash's
+  // ~40 KB per-request limit. Cap the embedding input at 512 chars and store
+  // only a 200-char preview in metadata so the total payload stays well under
+  // the limit regardless of index dimension.
+  const embedText = `[${result.type.toUpperCase()}] ${result.content.slice(0, 400)}`;
   const mode = await getUpstashVectorMode();
-  const vector = mode === 'manual' ? await generateEmbedding(text.slice(0, 512)) : undefined;
+  const vector = mode === 'manual' ? await generateEmbedding(embedText.slice(0, 512)) : undefined;
 
   try {
     await upstashPost('/upsert', {
       vectors: [{
         id,
-        ...(mode === 'auto-embed' ? { data: text.slice(0, 1200) } : { vector }),
+        // auto-embed: send a short data string; manual: send the vector only.
+        // Never send both — Upstash rejects payloads with both fields.
+        ...(mode === 'auto-embed' ? { data: embedText.slice(0, 512) } : { vector }),
         metadata: {
           namespace: 'realworld',
           type: result.type,
-          source: result.source,
+          source: result.source.slice(0, 60),
           query: result.query.slice(0, 80),
           fetched_at: result.fetchedAt,
           expires_at: expiresAt,
           ttl_hours: result.ttlHours,
-          // Store a short preview in metadata instead of full data field
-          preview: text.slice(0, 300),
+          // 200-char preview — just enough for retrieval display, keeps payload small
+          preview: embedText.slice(0, 200),
         },
-        // manual mode: vector only; auto-embed mode: data only (metadata.preview stays for cheap retrieval)
       }],
     });
   } catch (err) {
