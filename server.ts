@@ -13,6 +13,10 @@
  *   ✅ Request timeout (60s default, 120s for heavy routes)
  *   ✅ Unhandled rejection / uncaught exception handlers
  *   ✅ SOHAM_API_KEY required — no hardcoded fallback
+ *   ✅ Constant-time Bearer comparison
+ *   ✅ Prod fails fast without SOHAM_API_KEY; prod CORS defaults to fail-closed
+ *   ✅ gzip compression (SSE excluded)
+ *   ✅ Idle-connection drain on shutdown
  */
 
 import * as dotenv from 'dotenv';
@@ -36,11 +40,13 @@ if (loadedEnvPath) {
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { json, urlencoded } from 'express';
 import { logger } from './utils/logger';
 import { requestIdMiddleware } from './middleware/request-id';
 import { securityHeadersMiddleware } from './middleware/security-headers';
 import { rateLimitMiddleware } from './middleware/rate-limit';
+import { isValidBearer } from './utils/auth';
 
 // ── Route handlers ─────────────────────────────────────────────────────────────
 import { chatHandler } from './routes/chat';
@@ -83,18 +89,27 @@ const SOHAM_API_KEY = process.env.SOHAM_API_KEY;
 
 if (!SOHAM_API_KEY) {
   const msg = 'SOHAM_API_KEY is not set — all /api requests will be rejected.';
-  isProd ? logger.error(msg) : logger.warn(msg);
+  if (isProd) {
+    logger.error(msg + ' Refusing to start in production.');
+    process.exit(1);
+  }
+  logger.warn(msg);
 }
 
 // ── CORS origins ───────────────────────────────────────────────────────────────
 const allowedOrigins = new Set(
   (process.env.ALLOWED_ORIGINS ?? '')
     .split(',')
-    .map(o => o.trim())
+    .map(o => o.trim().replace(/\/$/, ''))
     .filter(Boolean)
 );
 if (process.env.RENDER_EXTERNAL_URL) {
   allowedOrigins.add(process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ''));
+}
+if (isProd && allowedOrigins.size === 0) {
+  // Safe default: browsers get denied cross-origin reads until ALLOWED_ORIGINS
+  // is configured. (curl / server-to-server have no Origin header and still work.)
+  logger.error('ALLOWED_ORIGINS is empty in production — cross-origin browser requests will be denied.');
 }
 
 // ── Timeout helper ─────────────────────────────────────────────────────────────
@@ -131,16 +146,27 @@ app.disable('x-powered-by'); // Don't advertise Express
 // ── Global middleware ──────────────────────────────────────────────────────────
 app.use(requestIdMiddleware);
 app.use(securityHeadersMiddleware);
+// gzip/deflate for JSON responses. SSE streams are excluded (compression buffers).
+app.use(compression({
+  filter: (req, res) => {
+    if (req.path === '/api/chat/stream') return false;
+    return compression.filter(req, res);
+  },
+}));
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.size === 0 || allowedOrigins.has(origin)) {
-      callback(null, true);
-    } else {
-      logger.warn('CORS blocked', { origin });
-      callback(null, false);
+    if (!origin) return callback(null, true); // non-browser clients (curl, server-to-server)
+    if (allowedOrigins.size === 0) {
+      // dev: allow all for convenience; production: fail closed
+      if (!isProd) return callback(null, true);
+      logger.warn('CORS blocked (no ALLOWED_ORIGINS configured)', { origin });
+      return callback(null, false);
     }
+    if (allowedOrigins.has(origin)) return callback(null, true);
+    logger.warn('CORS blocked', { origin });
+    callback(null, false);
   },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
@@ -173,7 +199,7 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   if (req.path === '/health' || req.path === '/health/' || req.path.startsWith('/health/')) return next();
 
   const authHeader = req.headers.authorization;
-  if (!SOHAM_API_KEY || !authHeader || authHeader !== `Bearer ${SOHAM_API_KEY}`) {
+  if (!isValidBearer(authHeader)) {
     logger.warn('Unauthorized request', {
       method: req.method,
       path: req.originalUrl,
@@ -379,6 +405,10 @@ server.listen(PORT, () => {
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 function gracefulShutdown(signal: string): void {
   logger.info(`${signal} received — shutting down gracefully`);
+
+  // Stop accepting new connections and drop idle keep-alive sockets; active
+  // requests keep running until the close callback (or the 15s force-exit).
+  server.closeIdleConnections?.();
 
   server.close((err) => {
     if (err) {
