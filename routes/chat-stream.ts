@@ -29,6 +29,7 @@ import { collectResearchSources, runToolByName } from '../tools/agent-tools';
 import { getSOHAMPipeline } from '../image/soham-image-pipeline';
 import { buildSystemPrompt } from './system-prompt';
 import { resolveAutoRoute } from '../routing/auto-router';
+import { applyTokenBudget } from '../routing/token-budget';
 import { logger } from '../utils/logger';
 import { parseGroqToolOptions } from '../routing/groq-tool-options';
 import { stripInjectedContext } from '../utils/clean-message';
@@ -273,6 +274,25 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
     } else {
       preferredModelId = settings.model;
       routingCategory = 'general';
+    }
+
+    // ── Token-budget reordering ───────────────────────────────────────────────
+    // Filter out models whose context windows are too small and sort the
+    // remaining chain cheapest-capable-first to conserve API quota.
+    // Only applied in auto mode; a manually selected model is used as-is.
+    if (isAutoMode && modelChain && modelChain.length > 0) {
+      const budgetResult = applyTokenBudget(
+        agentContext.prompt,
+        convertedHistory,
+        modelChain,
+        generationParams.maxOutputTokens,
+      );
+      modelChain = budgetResult.chain;
+      // Keep preferredModelId in sync with the new chain head so the
+      // smart-fallback "preferred" fast-path also picks the right model.
+      if (modelChain.length > 0 && modelChain[0] !== preferredModelId) {
+        preferredModelId = modelChain[0];
+      }
     }
 
     // ── Stream tokens ────────────────────────────────────────────────────────
