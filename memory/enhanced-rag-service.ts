@@ -2,17 +2,17 @@
  * Enhanced RAG Service
  *
  * Combines:
- * - Upstash Vector REST API for semantic short-term search (no SDK dependency)
+ * - Pinecone Vector REST API for semantic short-term search (no SDK dependency)
  * - Supabase REST API for structured long-term memory
  * - Hybrid retrieval: semantic similarity + recency + relevance scoring
  *
  * Memory types:
- * - SHORT_TERM: Recent conversation context (Upstash Vector)
+ * - SHORT_TERM: Recent conversation context (Pinecone Vector)
  * - LONG_TERM:  Extracted facts, preferences, skills (Supabase)
  * - REAL_WORLD: Live data from tools (web search, weather, news…)
  */
 
-import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
+import { generateEmbedding } from './embeddings';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,38 +51,9 @@ export interface RAGResult {
   };
 }
 
-// ─── Upstash REST helpers (no SDK) ────────────────────────────────────────────
+// ─── Pinecone REST helpers (no SDK) ────────────────────────────────────────────
 
-function getUpstashConfig() {
-  return {
-    url: (process.env.UPSTASH_VECTOR_REST_URL ?? process.env.UPSTASH_VECTOR_URL ?? '').replace(/\/$/, ''),
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN ?? process.env.UPSTASH_VECTOR_TOKEN ?? '',
-  };
-}
-
-function isUpstashReady(): boolean {
-  const { url, token } = getUpstashConfig();
-  return Boolean(url && token) && !isUpstashMisconfigured();
-}
-
-async function upstashPost(path: string, body: unknown, timeoutMs = 8000): Promise<any> {
-  const { url, token } = getUpstashConfig();
-  const res = await fetch(`${url}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText);
-    if (looksLikeRedisEndpoint(err)) markUpstashMisconfigured(err);
-    throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 120)}`);
-  }
-  return res.json();
-}
+import { isPineconeReady, vectorRequest as vectorPost } from './pinecone-vector';
 
 // ─── Supabase REST helpers ────────────────────────────────────────────────────
 
@@ -193,37 +164,29 @@ export class EnhancedRAGService {
     };
   }
 
-  /** Query short-term memory via Upstash Vector REST API */
+  /** Query short-term memory via Pinecone Vector REST API */
   private async queryShortTerm(
     userId: string,
     query: string,
     topK: number,
     minSimilarity: number
   ): Promise<MemoryChunk[]> {
-    if (!isUpstashReady()) return [];
+    if (!isPineconeReady()) return [];
 
     try {
-      const mode = await getUpstashVectorMode();
-      const semantic = mode === 'auto-embed'
-        ? { data: query.slice(0, 1500) }
-        : { vector: await generateEmbedding(query.slice(0, 1500)) };
+
+      const semantic = { vector: await generateEmbedding(query.slice(0, 1500)) };
       let payload: any;
       try {
-        payload = await upstashPost('/query', {
+        payload = await vectorPost('/query', {
           ...semantic,
           topK: topK * 2,
           includeMetadata: true,
           includeData: true,
-          filter: `user_id = '${userId}'`,
+          filter: { user_id: { $eq: userId } },
         });
       } catch {
-        // Retry without filter (some Upstash plans don't support metadata filters)
-        payload = await upstashPost('/query', {
-          ...semantic,
-          topK: topK * 4,
-          includeMetadata: true,
-          includeData: true,
-        });
+        return [];
       }
 
       const matches: any[] = payload?.result ?? payload?.matches ?? [];
@@ -243,14 +206,14 @@ export class EnhancedRAGService {
           userId,
           timestamp: (m.metadata?.created_at as string | undefined) ?? new Date().toISOString(),
           metadata: {
-            source: 'upstash',
+            source: 'pinecone',
             semanticScore: m.score ?? 0,
           },
         }))
         .filter(c => c.content.length > 0)
         .slice(0, topK);
     } catch (error) {
-      console.warn('[RAG] Upstash short-term query error:', error);
+      console.warn('[RAG] Pinecone short-term query error:', error);
       return [];
     }
   }
@@ -265,14 +228,12 @@ export class EnhancedRAGService {
     const id = `${chunk.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const timestamp = new Date().toISOString();
 
-    // Short-term → Upstash Vector
-    if (chunk.type === 'SHORT_TERM' && isUpstashReady()) {
+    // Short-term → Pinecone Vector
+    if (chunk.type === 'SHORT_TERM' && isPineconeReady()) {
       try {
-        const mode = await getUpstashVectorMode();
-        const semantic = mode === 'auto-embed'
-          ? { data: chunk.content }   // index embeds server-side (built-in model)
-          : { vector: await generateEmbedding(chunk.content.slice(0, 1000)) };
-        await upstashPost('/upsert', {
+
+        const semantic = { vector: await generateEmbedding(chunk.content.slice(0, 1000)) };
+        await vectorPost('/upsert', {
           vectors: [{
             id,
             ...semantic,
@@ -286,7 +247,7 @@ export class EnhancedRAGService {
           }],
         });
       } catch (error) {
-        console.warn('[RAG] Upstash upsert error:', error);
+        console.warn('[RAG] Pinecone upsert error:', error);
       }
     }
 

@@ -45,3 +45,6 @@ jobs:
 
       - name: Run token-detector and fallback checks
         run: npm run test:token-fallback
+
+      - name: Run Pinecone and RAG checks (mocked)
+        run: npm run test:pinecone

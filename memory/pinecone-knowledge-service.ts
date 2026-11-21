@@ -1,8 +1,8 @@
 /**
- * Upstash Knowledge Service — Public Suggestions & Corrections
+ * Pinecone Knowledge Service — Public Suggestions & Corrections
  * ════════════════════════════════════════════════════════════════════════════
  *
- * Stores AI suggestions, corrections, and curated knowledge in Upstash Vector
+ * Stores AI suggestions, corrections, and curated knowledge in Pinecone Vector
  * under a SHARED namespace (no user_id filter) so they are available to ALL
  * users when semantically relevant.
  *
@@ -24,7 +24,7 @@
 
 import { randomUUID } from 'crypto';
 import { generateEmbedding } from './enhanced-rag';
-import { getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,48 +55,19 @@ export interface KnowledgeSearchResult {
   score: number;
 }
 
-// ─── Upstash helpers ──────────────────────────────────────────────────────────
+// ─── Pinecone helpers ──────────────────────────────────────────────────────────
 
-function getUpstash() {
-  return {
-    url: (process.env.UPSTASH_VECTOR_REST_URL ?? process.env.UPSTASH_VECTOR_URL ?? '').replace(/\/$/, ''),
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN ?? process.env.UPSTASH_VECTOR_TOKEN ?? '',
-  };
-}
-
-function isUpstashReady(): boolean {
-  const { url, token } = getUpstash();
-  return Boolean(url && token) && !isUpstashMisconfigured();
-}
-
-async function upstashFetch(path: string, body: unknown, timeoutMs = 8000): Promise<any> {
-  const { url, token } = getUpstash();
-  const res = await fetch(`${url}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText);
-    if (looksLikeRedisEndpoint(err)) markUpstashMisconfigured(err);
-    throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 120)}`);
-  }
-  return res.json();
-}
+import { isPineconeReady, vectorRequest as vectorFetch } from './pinecone-vector';
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
-export class UpstashKnowledgeService {
+export class PineconeKnowledgeService {
 
   // ── Store a public knowledge entry ────────────────────────────────────────
 
   async storeKnowledge(entry: Omit<PublicKnowledgeEntry, 'id' | 'createdAt' | 'usageCount'>): Promise<string | null> {
-    if (!isUpstashReady()) {
-      console.warn('[Knowledge] Upstash not configured — knowledge not stored');
+    if (!isPineconeReady()) {
+      console.warn('[Knowledge] Pinecone not configured — knowledge not stored');
       return null;
     }
 
@@ -122,14 +93,14 @@ export class UpstashKnowledgeService {
     const storeText = entry.question
       ? `Q: ${entry.question.slice(0, 200)}\nA: ${entry.content.slice(0, 400)}`
       : entry.content.slice(0, 500);
-    const mode = await getUpstashVectorMode();
-    const vector = mode === 'manual' ? await generateEmbedding(storeText.slice(0, 512)) : undefined;
+
+    const vector = await generateEmbedding(storeText.slice(0, 512));
 
     try {
-      await upstashFetch('/upsert', {
+      await vectorFetch('/upsert', {
         vectors: [{
           id,
-          ...(mode === 'auto-embed' ? { data: storeText } : { vector }),   // auto-embed needs data; manual needs vector; never both
+          vector,
           metadata: {
             type: entry.type,
             question: (entry.question ?? '').slice(0, 200),
@@ -160,35 +131,22 @@ export class UpstashKnowledgeService {
     topK = 4,
     minSimilarity = 0.50
   ): Promise<KnowledgeSearchResult[]> {
-    if (!isUpstashReady()) return [];
+    if (!isPineconeReady()) return [];
 
-    const mode = await getUpstashVectorMode();
-    const semantic = mode === 'auto-embed'
-      ? { data: queryText.slice(0, 1500) }
-      : { vector: await generateEmbedding(queryText.slice(0, 1500)) };
+    const semantic = { vector: await generateEmbedding(queryText.slice(0, 1500)) };
 
     let payload: any;
     try {
       // Try with namespace filter first
-      payload = await upstashFetch('/query', {
+      payload = await vectorFetch('/query', {
         ...semantic,
         topK: topK * 3,
         includeMetadata: true,
         includeData: true,
-        filter: `namespace = 'public'`,
+        filter: { namespace: { $eq: 'public' } },
       });
     } catch {
-      // Fallback: no filter, then filter client-side
-      try {
-        payload = await upstashFetch('/query', {
-          ...semantic,
-          topK: topK * 5,
-          includeMetadata: true,
-          includeData: true,
-        });
-      } catch {
-        return [];
-      }
+      return [];
     }
 
     const matches: any[] = payload?.result ?? payload?.matches ?? [];
@@ -248,33 +206,20 @@ export class UpstashKnowledgeService {
   // ── Increment usage count (best-effort) ───────────────────────────────────
 
   private async incrementUsageCounts(ids: string[]): Promise<void> {
-    // Upstash Vector doesn't support atomic increments on metadata,
+    // Pinecone Vector doesn't support atomic increments on metadata,
     // so we do a best-effort re-fetch + re-upsert for the top result only.
     // This is intentionally lightweight.
-    if (ids.length === 0 || !isUpstashReady()) return;
+    if (ids.length === 0 || !isPineconeReady()) return;
 
     try {
-      const { url, token } = getUpstash();
-      // Fetch current metadata for first id
-      const res = await fetch(`${url}/fetch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ ids: [ids[0]], includeMetadata: true, includeData: true }),
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!res.ok) return;
-
-      const data = await res.json() as any;
+      const data = await vectorFetch('/fetch', { ids: [ids[0]] }, 4000);
       const vectors: any[] = data?.result ?? data?.vectors ?? [];
       if (vectors.length === 0) return;
 
       const v = vectors[0];
       const currentCount = (v.metadata?.usage_count as number | undefined) ?? 0;
 
-      await upstashFetch('/update', {
+      await vectorFetch('/update', {
         id: ids[0],
         metadata: {
           ...v.metadata,
@@ -345,9 +290,9 @@ export class UpstashKnowledgeService {
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
 
-let _instance: UpstashKnowledgeService | null = null;
+let _instance: PineconeKnowledgeService | null = null;
 
-export function getUpstashKnowledgeService(): UpstashKnowledgeService {
-  if (!_instance) _instance = new UpstashKnowledgeService();
+export function getPineconeKnowledgeService(): PineconeKnowledgeService {
+  if (!_instance) _instance = new PineconeKnowledgeService();
   return _instance;
 }

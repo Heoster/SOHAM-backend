@@ -1,25 +1,4 @@
-/**
- * Shared Embeddings — single source of truth for the whole codebase.
- * ════════════════════════════════════════════════════════════════════════════
- *
- * WHY THIS EXISTS
- * An Upstash Vector index has a FIXED dimension chosen at creation time; a
- * vector with any other length is rejected with `400 Missing or wrong input`.
- * `gemini-embedding-001` defaults to 3072 dimensions, and the code paths that
- * don't pin `outputDimensionality` silently produce vectors of whatever the
- * API default is — which is why stores/queries intermittently failed.
- *
- * The index dimension is resolved (in priority order):
- *   1. EMBEDDING_DIMS env var          — explicit operator override
- *   2. `GET {UPSTASH_VECTOR_*}/info`   — probed once, cached (reports e.g. {"result":{"dimension":N}})
- *   3. 3072 (keyed) / 512 (unkeyed)    — preserves historical behaviour
- *
- * gemini-embedding-001 is a Matryoshka (MRL) model, so requesting a smaller
- * `outputDimensionality` yields a truncated, re-normalized vector whose
- * geometry is still valid. If Google ever returns a different length anyway,
- * we truncate + re-normalize client-side rather than send a wrong-shaped
- * vector to the index. The hash fallback always matches the index dimension.
- */
+/** Shared dimension-pinned embeddings for Pinecone and local memory. */
 
 // ─── Hash embedding (deterministic, offline, any dimension) ──────────────────
 
@@ -36,7 +15,7 @@ export function hashEmbedding(text: string, dimensions = 512): number[] {
   }
   const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
   // 7 decimals ≈ float32 precision; keeps JSON payloads small (~30% less) —
-  // Upstash rejects oversized request bodies and stores float32 anyway.
+  // Pinecone rejects oversized request bodies and stores float32 anyway.
   return vec.map(v => Math.round((v / norm) * 1e7) / 1e7);
 }
 
@@ -47,48 +26,6 @@ let cachedDim: number | null = null;
 /** Test hook — clears the cached dimension. */
 export function resetEmbeddingDimensionCache(): void {
   cachedDim = null;
-}
-
-function getUpstashBase(): { url: string; token: string } {
-  return {
-    url: (process.env.UPSTASH_VECTOR_REST_URL || process.env.UPSTASH_VECTOR_URL || '').replace(/\/$/, ''),
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN || process.env.UPSTASH_VECTOR_TOKEN || '',
-  };
-}
-
-// ─── Redis-compat endpoint detection (warn once, then fail closed) ────────────
-// The classic Render/Upstash misconfiguration: UPSTASH_VECTOR_REST_URL points at
-// an Upstash *Redis* instance instead of a Vector index. Redis answers every
-// /upsert with 400 "ERR Command is not available: 'UPSERT' … rediscompatibility".
-// Detect it once, log one actionable line, then go quiet (and stop issuing
-// doomed calls) instead of 400-ing on every tool result.
-let upstashMisconfigured = false;
-let misconfigLogged = false;
-
-/** Redis-compat body sniffing — safe on any Upstash error payload. */
-export function looksLikeRedisEndpoint(body: string): boolean {
-  return /rediscompatibility|Command is not available|ERR unknown command|WRONGTYPE/i.test(body);
-}
-
-export function markUpstashMisconfigured(bodySnippet: string): void {
-  upstashMisconfigured = true;
-  if (misconfigLogged) return;
-  misconfigLogged = true;
-  console.error(
-    '[Upstash] MISCONFIGURED — UPSTASH_VECTOR_REST_URL points at a Redis-compatible endpoint ' +
-    `(${bodySnippet.replace(/\s+/g, ' ').slice(0, 140)}). Vector memory/RAG is now DISABLED for this process. ` +
-    'Fix the Render env vars to the Vector index credentials from console.upstash.com → Vector → your index → REST API (or remove them to disable vector features cleanly).'
-  );
-}
-
-export function isUpstashMisconfigured(): boolean {
-  return upstashMisconfigured;
-}
-
-/** Test hook — clears the misconfiguration flag and its one-time log. */
-export function resetUpstashMisconfigForTests(): void {
-  upstashMisconfigured = false;
-  misconfigLogged = false;
 }
 
 function readDimension(info: any): number | null {
@@ -107,7 +44,7 @@ function readDimension(info: any): number | null {
 }
 
 /**
- * The dimension the Upstash index was created with. Every vector we upsert or
+ * The dimension the Pinecone index was created with. Every vector we upsert or
  * query MUST have exactly this length.
  */
 export async function getEmbeddingDimension(): Promise<number> {
@@ -118,106 +55,20 @@ export async function getEmbeddingDimension(): Promise<number> {
     return (cachedDim = Math.floor(envDim));
   }
 
-  const { url, token } = getUpstashBase();
-  const hasGoogleKey = Boolean(process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENAI_API_KEY);
-  // Historical behaviour: no Google key → 512-dim hash vectors; with Google key →
-  // gemini-embedding-001 API default (3072). Keep those as last-resort defaults
-  // when neither EMBEDDING_DIMS nor the /info probe can tell us the true dim.
-  const fallbackDim = hasGoogleKey ? 3072 : 512;
-
-  if (upstashMisconfigured) return (cachedDim = cachedDim ?? fallbackDim);
-
-  if (url && token) {
-    try {
-      const res = await fetch(`${url}/info`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (res.ok) {
-        const dim = readDimension(await res.json());
-        if (dim) {
-          console.log(`[Embedding] Upstash index dimension is ${dim} (via /info)`);
-          return (cachedDim = dim);
-        }
-        console.warn(`[Embedding] Upstash /info did not report a dimension — using default ${fallbackDim}. Set EMBEDDING_DIMS to override.`);
-      } else {
-        console.warn(`[Embedding] Upstash /info returned ${res.status} — using default ${fallbackDim}. Set EMBEDDING_DIMS to override.`);
-      }
-    } catch (err) {
-      console.warn(`[Embedding] Could not probe Upstash /info — using default ${fallbackDim}. Set EMBEDDING_DIMS to override.`, err instanceof Error ? err.message : err);
-    }
+  const { isPineconeReady, pineconeRequest } = await import('./pinecone-vector');
+  if (isPineconeReady()) {
+    const stats = await pineconeRequest('/describe_index_stats', {});
+    const dim = readDimension(stats);
+    if (!dim) throw new Error('Pinecone did not report an index dimension; set EMBEDDING_DIMS');
+    return (cachedDim = dim);
   }
-  return (cachedDim = fallbackDim);
-}
-
-// ─── Index capability probe — auto-embed vs manual vectors ────────────────────
-// An Upstash index may OR may not have a built-in embedding model. With one,
-// payloads of { data } are embedded server-side (same space for writes and
-// queries — always consistent). Without one, every payload needs a correctly
-// sized `vector`. We probe once with a harmless data-only /query (no writes,
-// no cost) and cache the answer.
-
-let cachedMode: 'auto-embed' | 'manual' | null = null;
-// In-flight probe promise — prevents concurrent callers from each firing their
-// own /query probe before the first one resolves, which caused the repeated
-// "data-only /query rejected" log lines on every request.
-let modeProbeInFlight: Promise<'auto-embed' | 'manual'> | null = null;
-
-/** Test hook — clears the cached mode. */
-export function resetUpstashModeCache(): void {
-  cachedMode = null;
-  modeProbeInFlight = null;
-}
-
-/**
- * 'auto-embed' → the index has a built-in embedding model; prefer { data }
- * payloads. 'manual' → the index needs client-side vectors
- * (generateEmbedding at getEmbeddingDimension()).
- */
-export async function getUpstashVectorMode(): Promise<'auto-embed' | 'manual'> {
-  if (cachedMode) return cachedMode;
-  if (upstashMisconfigured) return (cachedMode = 'manual');
-  const { url, token } = getUpstashBase();
-  if (!url || !token) return (cachedMode = 'manual');
-
-  // All concurrent callers share the same in-flight probe so the /query fires once.
-  if (!modeProbeInFlight) {
-    modeProbeInFlight = (async (): Promise<'auto-embed' | 'manual'> => {
-      try {
-        const res = await fetch(`${url}/query`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ data: 'capability probe', topK: 1, includeMetadata: false, includeData: false }),
-          signal: AbortSignal.timeout(5000),
-        });
-        if (res.ok) {
-          console.log('[Upstash] Built-in embedding model detected (data-only /query accepted) — auto-embed mode');
-          return (cachedMode = 'auto-embed');
-        }
-        const body = await res.text().catch(() => '');
-        if (looksLikeRedisEndpoint(body)) {
-          markUpstashMisconfigured(body);
-          return (cachedMode = 'manual');
-        }
-        console.warn(`[Upstash] data-only /query rejected (${res.status}: ${body.slice(0, 160)}) — manual-vector mode`);
-        return (cachedMode = 'manual');
-      } catch (err) {
-        console.warn('[Upstash] Mode probe failed — manual-vector mode', err instanceof Error ? err.message : err);
-        return (cachedMode = 'manual');
-      } finally {
-        modeProbeInFlight = null;
-      }
-    })();
-  }
-
-  return modeProbeInFlight;
+  return (cachedDim = 512);
 }
 
 // ─── Semantic embedding (Google gemini-embedding-001, MRL) ────────────────────
 
 function truncateToDimension(values: number[], dim: number): number[] | null {
-  // JSON.stringify(NaN) -> "null" -> Upstash 400 "Missing or wrong input".
+  // JSON.stringify(NaN) -> "null" -> Pinecone 400 "Missing or wrong input".
   // Never let a non-finite value reach the wire.
   const sliced = values.slice(0, dim).map(v => (Number.isFinite(v) ? v : 0));
   const norm = Math.sqrt(sliced.reduce((s, v) => s + v * v, 0));

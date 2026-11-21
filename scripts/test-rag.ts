@@ -5,18 +5,13 @@
  */
 import assert from 'assert';
 import { chunkText, ingestDocument, searchDocuments, listDocuments, deleteDocument } from '../memory/document-rag';
-import { resetEmbeddingDimensionCache, resetUpstashModeCache } from '../memory/embeddings';
+import { resetEmbeddingDimensionCache } from '../memory/embeddings';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
 
 type Vec = { id?: string; vector?: number[]; metadata: any; data?: string };
 const store = new Map<string, Vec>();
-// When true, the stub simulates an Upstash index WITH a built-in embedding
-// model (data-only payloads accepted & embedded server-side). When false,
-// it simulates a manual index (data-only /query is rejected, vectors required).
-let autoEmbedMode = false;
-
 function cosine(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
   let dot = 0, na = 0, nb = 0;
@@ -24,14 +19,10 @@ function cosine(a: number[], b: number[]): number {
   return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
 }
 
-function filterMatch(metadata: any, filter?: string): boolean {
+function filterMatch(metadata: any, filter?: any): boolean {
   if (!filter) return true;
-  const andParts = filter.split(/\s+AND\s+/i);
-  return andParts.every(part => {
-    const m = part.trim().match(/^(\w+)\s*=\s*'([^']*)'$/);
-    if (!m) return true;
-    return String(metadata?.[m[1]] ?? '') === m[2];
-  });
+  if (filter.$and) return filter.$and.every((part: any) => filterMatch(metadata, part));
+  return Object.entries(filter).every(([key, value]: [string, any]) => metadata[key] === value.$eq);
 }
 
 async function stubbedFetch(input: any, init?: any): Promise<Response> {
@@ -41,35 +32,17 @@ async function stubbedFetch(input: any, init?: any): Promise<Response> {
   const json = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
 
   if (url.includes('/upsert') && method === 'POST') {
-    for (const v of body.vectors ?? []) store.set(v.id, v);
+    for (const v of body.vectors ?? []) store.set(v.id, { ...v, vector: v.values, data: v.metadata?._soham_text });
     return json({ result: 'Ok' });
   }
   if (url.includes('/query') && method === 'POST') {
     const topK = Number(body.topK ?? 4);
-    if (body.data && !body.vector) {
-      if (!autoEmbedMode) {
-        // manual index: data-only queries are rejected — this is the probe the mode detector relies on
-        return json({ error: 'Missing vector or data' }, 400);
-      }
-      // built-in embedding model: score by token overlap to stay deterministic offline
-      const qTokens = String(body.data).toLowerCase().split(/\W+/).filter(w => w.length > 3);
-      const matches = [...store.values()]
-        .filter(v => filterMatch(v.metadata, body.filter))
-        .map(v => {
-          const hay = `${v.data ?? ''} ${JSON.stringify(v.metadata)}`.toLowerCase();
-          const hits = qTokens.filter(t => hay.includes(t)).length;
-          return { id: v.id, score: qTokens.length ? hits / qTokens.length : 0, metadata: v.metadata, data: v.data };
-        })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topK);
-      return json({ result: matches });
-    }
     const matches = [...store.values()]
       .filter(v => filterMatch(v.metadata, body.filter))
       .map(v => ({ id: v.id, score: cosine(body.vector, v.vector ?? []), metadata: v.metadata, data: v.data }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
-    return json({ result: matches });
+    return json({ matches });
   }
   if (url.includes('/delete') && method === 'POST') {
     for (const id of body.ids ?? []) store.delete(id);
@@ -83,12 +56,11 @@ async function main() {
   // Deterministic, offline: no Supabase (in-memory registry), no Google key
   setEnvUndefined('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY',
     'GOOGLE_AI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY',
-    'UPSTASH_VECTOR_REST_URL', 'UPSTASH_VECTOR_REST_TOKEN');
-  resetUpstashModeCache();
+    'PINECONE_INDEX_HOST', 'PINECONE_API_KEY');
   resetEmbeddingDimensionCache();
   process.env.EMBEDDING_DIMS = '64';   // tiny vectors for a fast, exact test
-  process.env.UPSTASH_VECTOR_REST_URL = 'https://uvt.example.com'; // routes through the stub
-  process.env.UPSTASH_VECTOR_REST_TOKEN = 'test-token';
+  process.env.PINECONE_INDEX_HOST = 'https://test.svc.pinecone.io'; // routes through the stub
+  process.env.PINECONE_API_KEY = 'test-token';
   globalThis.fetch = stubbedFetch as typeof fetch;
 
   // ── 1) Chunker: sizes, overlap, no empty chunks ────────────────────────────
@@ -167,36 +139,6 @@ trailer << /Root 1 0 R >>
   // Restore isolation expectation: delete everything created so far
   for (const d of await listDocuments(userId)) await deleteDocument(userId, d.id);
   assert.equal(store.size, 0);
-
-  // ── 5) Auto-embed mode: index with a built-in embedding model ────────────────
-  // In this mode NO vector may be required: upserts carry `data`, queries carry
-  // `data`, and the manual-embedding path must stay dormant.
-  store.clear();
-  autoEmbedMode = true;
-  resetUpstashModeCache();
-  resetEmbeddingDimensionCache();
-  setEnvUndefined('EMBEDDING_DIMS');
-
-  const autoDoc = await ingestDocument(userId, {
-    buffer: Buffer.from('Auto-embed Handbook.\n\nThe Orion project shipped on 12 March 2026 with a single Postgres database.', 'utf8'),
-    name: 'orion-handbook.md',
-    mimeType: 'text/markdown',
-    sizeBytes: 120,
-  });
-  assert.equal(autoDoc.status, 'ready');
-  const storedShapes = [...store.values()];
-  assert.ok(storedShapes.length >= 1, 'chunks must be stored');
-  assert.ok(storedShapes.every(v => typeof v.data === 'string' && v.vector === undefined),
-    'auto-embed upserts must carry data only — never a client-side vector');
-
-  const autoHits = await searchDocuments(userId, 'Orion project shipped', 4, 0.0);
-  assert.ok(autoHits.some(h => h.docName === 'orion-handbook.md'), 'auto-embed mode must retrieve the stored chunk');
-
-  for (const d of await listDocuments(userId)) await deleteDocument(userId, d.id);
-  assert.equal(store.size, 0, 'auto-embed delete must remove the vectors');
-  autoEmbedMode = false;
-  resetUpstashModeCache();
-  console.log('auto-embed mode ok — data-only payloads round-trip without any client-side vector');
 
   // ── 6) Failure path: unreadable file → status failed, no vectors ────────────
   const failed = await ingestDocument(userId, {

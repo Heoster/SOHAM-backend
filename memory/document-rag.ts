@@ -6,20 +6,20 @@
  *   1. Extract text   PDF (pdf-parse) / DOCX (mammoth) / TXT·MD·CSV·JSON·plain
  *   2. Chunk          paragraph/sentence-aware, ~900 chars, 150 overlap
  *   3. Embed          shared dimension-pinned embeddings (memory/embeddings.ts)
- *   4. Store          Upstash Vector — namespace "docs", user_id metadata filter
+ *   4. Store          Pinecone Vector — namespace "docs", user_id metadata filter
  *                     (ids: doc:{userId}:{docId}:{chunkIndex})
  *   5. Registry       Supabase `documents` table (REST) with in-memory fallback
  *
- * Retrieval: `searchDocuments` embeds the query and queries Upstash with a
+ * Retrieval: `searchDocuments` embeds the query and queries Pinecone with a
  * `namespace = 'docs' AND user_id = '…'` filter (client-side filter fallback),
  * and the orchestrator injects the best chunks as a "Your documents" layer.
  *
  * Set-up: run the SQL in memory/SUPABASE_SETUP.sql (documents table) and
- * create ONE Upstash Vector index — embedding dimensions are auto-detected.
+ * create ONE Pinecone Vector index — embedding dimensions are auto-detected.
  */
 
 import { randomUUID } from 'crypto';
-import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
+import { generateEmbedding } from './embeddings';
 import { logger } from '../utils/logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -134,40 +134,9 @@ async function extractText(buffer: Buffer, mimeType: string, name: string): Prom
   return text.trim();
 }
 
-// ─── Upstash helpers ──────────────────────────────────────────────────────────
+// ─── Pinecone helpers ──────────────────────────────────────────────────────────
 
-function getUpstash() {
-  return {
-    url: (process.env.UPSTASH_VECTOR_REST_URL ?? process.env.UPSTASH_VECTOR_URL ?? '').replace(/\/$/, ''),
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN ?? process.env.UPSTASH_VECTOR_TOKEN ?? '',
-  };
-}
-
-function isUpstashReady(): boolean {
-  const { url, token } = getUpstash();
-  return Boolean(url && token) && !isUpstashMisconfigured();
-}
-
-async function upstashFetch(path: string, body: unknown, timeoutMs = 8000): Promise<any> {
-  const { url, token } = getUpstash();
-  const res = await fetch(`${url}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText);
-    if (looksLikeRedisEndpoint(err)) markUpstashMisconfigured(err);
-    throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 140)}`);
-  }
-  return res.json();
-}
-
-/** SQL-like filter values: strip anything outside a safe alphabet. */
-function filterSafe(value: string): string {
-  return value.replace(/[^A-Za-z0-9_.@-]/g, '').slice(0, 128);
-}
+import { isPineconeReady, vectorRequest as vectorFetch } from './pinecone-vector';
 
 // ─── Document registry (Supabase documents table, in-memory fallback) ─────────
 
@@ -315,14 +284,14 @@ async function registryDelete(id: string): Promise<string[]> {
 // ─── Vector upsert/query ──────────────────────────────────────────────────────
 
 async function upsertChunk(userId: string, docId: string, docName: string, chunkIndex: number, text: string): Promise<string | null> {
-  if (!isUpstashReady()) return null;
+  if (!isPineconeReady()) return null;
   const id = `doc:${userId}:${docId}:${chunkIndex}`;
-  const mode = await getUpstashVectorMode();
-  const vector = mode === 'manual' ? await generateEmbedding(text) : undefined;
-  await upstashFetch('/upsert', {
+
+  const vector = await generateEmbedding(text);
+  await vectorFetch('/upsert', {
     vectors: [{
       id,
-      ...(mode === 'auto-embed' ? {} : { vector }),   // auto-embed: `data` below is the embedded source
+      vector,
       metadata: {
         type: 'DOCUMENT_CHUNK',
         namespace: 'docs',
@@ -340,29 +309,22 @@ async function upsertChunk(userId: string, docId: string, docName: string, chunk
 }
 
 export async function searchDocuments(userId: string | undefined, query: string, topK = 4, minSimilarity = 0.30): Promise<DocumentSearchHit[]> {
-  if (!userId || !isUpstashReady()) return [];
-  const safeUser = filterSafe(userId);
-  const mode = await getUpstashVectorMode();
-  const semantic = mode === 'auto-embed'
-    ? { data: query.slice(0, 1500) }
-    : { vector: await generateEmbedding(query.slice(0, 1500)) };
+  if (!userId || !isPineconeReady()) return [];
+  const safeUser = userId;
+
+  const semantic = { vector: await generateEmbedding(query.slice(0, 1500)) };
 
   let payload: any;
   try {
-    payload = await upstashFetch('/query', {
+    payload = await vectorFetch('/query', {
       ...semantic,
       topK,
       includeMetadata: true,
       includeData: true,
-      filter: `namespace = 'docs' AND user_id = '${safeUser}'`,
+      filter: { $and: [{ namespace: { $eq: 'docs' } }, { user_id: { $eq: safeUser } }] },
     });
   } catch {
-    // Filter unsupported on this index — query broad, filter client-side
-    try {
-      payload = await upstashFetch('/query', { ...semantic, topK: topK * 4, includeMetadata: true, includeData: true });
-    } catch {
-      return [];
-    }
+    return []; // Fail closed; never retry without the metadata scope.
   }
 
   const matches: any[] = payload?.result ?? payload?.matches ?? [];
@@ -443,7 +405,7 @@ export async function ingestDocument(userId: string, input: IngestInput): Promis
       }
     }
     if (chunkIds.length === 0) {
-      throw new Error('Embedding store failed for every chunk — is Upstash Vector configured?');
+      throw new Error('Embedding store failed for every chunk — is Pinecone Vector configured?');
     }
 
     record.status = 'ready';
@@ -470,9 +432,9 @@ export async function deleteDocument(userId: string, docId: string): Promise<boo
   if (!existing) return false;
   const chunkIds = await registryDelete(docId);
 
-  if (chunkIds.length > 0 && isUpstashReady()) {
+  if (chunkIds.length > 0 && isPineconeReady()) {
     try {
-      await upstashFetch('/delete', { ids: chunkIds.slice(0, 1000) });
+      await vectorFetch('/delete', { ids: chunkIds.slice(0, 1000) });
     } catch (err) {
       logger.warn('[Docs] Vector delete failed (registry row removed anyway)', { error: String(err).slice(0, 160) });
     }

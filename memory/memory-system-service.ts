@@ -358,7 +358,7 @@ export class MemorySystemService {
 
   /**
    * Generate embedding via Google gemini-embedding-001 (dimension pinned to the
-   * Upstash index — see ./embeddings). Falls back to a deterministic
+   * Pinecone index — see ./embeddings). Falls back to a deterministic
    * hash-embedding at that same dimension if Google is unreachable.
    */
   async generateEmbedding(text: string): Promise<number[]> {

@@ -1,59 +1,25 @@
 /**
- * Enhanced RAG Memory — Upstash Vector + Supabase
+ * Enhanced RAG Memory — Pinecone Vector + Supabase
  * ════════════════════════════════════════════════
  *
  * Replaces the basic hash-embedding approach with:
  *   • Real semantic embeddings via Google gemini-embedding-001
- *   • Upstash Vector for fast ANN (approximate nearest-neighbour) search
+ *   • Pinecone Vector for fast ANN (approximate nearest-neighbour) search
  *   • Supabase for durable long-term storage with metadata
  *   • Recency weighting: recent memories score higher
  *   • Deduplication: skip near-identical memories (cosine > 0.95)
  *   • Namespace isolation: every user gets their own vector namespace
  *
- * Upstash Vector REST API docs: https://upstash.com/docs/vector/api
+ * Pinecone Vector REST API docs: https://docs.pinecone.io/reference/api/introduction
  */
 
 import { randomUUID } from 'crypto';
+import { generateEmbedding } from './embeddings';
+export { generateEmbedding, hashEmbedding } from './embeddings';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-function getUpstash() {
-  return {
-    url: (process.env.UPSTASH_VECTOR_REST_URL || process.env.UPSTASH_VECTOR_URL || '').replace(/\/$/, ''),
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN || process.env.UPSTASH_VECTOR_TOKEN || '',
-  };
-}
-
-function isUpstashReady(): boolean {
-  const { url, token } = getUpstash();
-  return Boolean(url && token) && !isUpstashMisconfigured();
-}
-
-// ─── Embedding ────────────────────────────────────────────────────────────────
-// Shared implementation (dimension-pinned, see ./embeddings for the why).
-export { generateEmbedding, hashEmbedding } from './embeddings';
-import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
-
-// ─── Upstash Vector helpers ───────────────────────────────────────────────────
-
-async function upstashFetch(path: string, body: unknown, timeoutMs = 8000): Promise<any> {
-  const { url, token } = getUpstash();
-  const res = await fetch(`${url}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText);
-    if (looksLikeRedisEndpoint(err)) markUpstashMisconfigured(err);
-    throw new Error(`Upstash ${path} ${res.status}: ${err.slice(0, 120)}`);
-  }
-  return res.json();
-}
+import { isPineconeReady, vectorRequest as vectorFetch } from './pinecone-vector';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,15 +43,15 @@ export interface RagSearchResult {
 // ─── Upsert ───────────────────────────────────────────────────────────────────
 
 /**
- * Store a text snippet in Upstash Vector.
+ * Store a text snippet in Pinecone Vector.
  * Skips if near-duplicate already exists (similarity > 0.95).
  */
 export async function upsertRagEntry(entry: Omit<RagEntry, 'id' | 'createdAt'>): Promise<void> {
-  if (!isUpstashReady()) return;
+  if (!isPineconeReady()) return;
 
   const text = entry.text.slice(0, 1500);
-  const mode = await getUpstashVectorMode();
-  const vector = mode === 'manual' ? await generateEmbedding(text) : undefined;
+
+  const vector = await generateEmbedding(text);
 
   // Dedup check — query top-1 for this user
   try {
@@ -101,10 +67,10 @@ export async function upsertRagEntry(entry: Omit<RagEntry, 'id' | 'createdAt'>):
   const id = `${entry.userId}:${entry.role}:${Date.now()}:${randomUUID().slice(0, 8)}`;
   const now = new Date().toISOString();
 
-  await upstashFetch('/upsert', {
+  await vectorFetch('/upsert', {
     vectors: [{
       id,
-      ...(mode === 'auto-embed' ? {} : { vector }),   // auto-embed: `data` is sent below; never both
+      vector,
       metadata: {
         user_id: entry.userId,
         role: entry.role,
@@ -131,34 +97,21 @@ export async function queryRagEntries(
   topK = 6,
   minSimilarity = 0.45
 ): Promise<RagSearchResult[]> {
-  if (!isUpstashReady() || !userId) return [];
+  if (!isPineconeReady() || !userId) return [];
 
-  const mode = await getUpstashVectorMode();
-  const semantic = mode === 'auto-embed'
-    ? { data: queryText.slice(0, 1500) }
-    : { vector: await generateEmbedding(queryText) };
+  const semantic = { vector: await generateEmbedding(queryText) };
 
   let payload: any;
   try {
-    payload = await upstashFetch('/query', {
+    payload = await vectorFetch('/query', {
       ...semantic,
       topK: topK * 3, // over-fetch then re-rank
       includeMetadata: true,
       includeData: true,
-      filter: `user_id = '${userId}'`,
+      filter: { user_id: { $eq: userId } },
     });
   } catch {
-    // Filter syntax may not be supported on all Upstash plans — retry without filter
-    try {
-      payload = await upstashFetch('/query', {
-        ...semantic,
-        topK: topK * 5,
-        includeMetadata: true,
-        includeData: true,
-      });
-    } catch {
-      return [];
-    }
+    return []; // Fail closed; never retry without the metadata scope.
   }
 
   const matches: any[] = payload?.result ?? payload?.matches ?? [];

@@ -7,7 +7,7 @@
  *   - Live weather for detected locations
  *   - Live web search results
  *
- * Results are stored in Upstash Vector as REAL_WORLD chunks so they:
+ * Results are stored in Pinecone Vector as REAL_WORLD chunks so they:
  *   1. Enrich the current response immediately
  *   2. Are retrievable by future semantically similar queries (RAG)
  *   3. Expire after a configurable TTL (news: 1h, weather: 30min, facts: 24h)
@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { generateEmbedding, getUpstashVectorMode, looksLikeRedisEndpoint, isUpstashMisconfigured, markUpstashMisconfigured } from './embeddings';
+import { generateEmbedding } from './embeddings';
 import { runSearchPipeline } from '../tools/search-engine';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -94,64 +94,31 @@ export function withDateTime(systemPrompt: string): string {
   return `${line}\n\n${systemPrompt}`;
 }
 
-// ─── Upstash helpers ──────────────────────────────────────────────────────────
+// ─── Pinecone helpers ──────────────────────────────────────────────────────────
 
-function getUpstash() {
-  return {
-    url: (process.env.UPSTASH_VECTOR_REST_URL ?? process.env.UPSTASH_VECTOR_URL ?? '').replace(/\/$/, ''),
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN ?? process.env.UPSTASH_VECTOR_TOKEN ?? '',
-  };
-}
+import { isPineconeReady, vectorRequest as vectorPost } from './pinecone-vector';
 
-function isUpstashReady(): boolean {
-  const { url, token } = getUpstash();
-  return Boolean(url && token) && !isUpstashMisconfigured();
-}
-
-async function upstashPost(path: string, body: unknown, timeoutMs = 6000): Promise<any> {
-  const { url, token } = getUpstash();
-  const res = await fetch(`${url}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    // Keep Upstash's reason in the error — a bare "Upstash /upsert 400" is undebuggable.
-    const bodyText = await res.text().catch(() => '');
-    if (looksLikeRedisEndpoint(bodyText)) markUpstashMisconfigured(bodyText);
-    throw new Error(`Upstash ${path} ${res.status}: ${bodyText.slice(0, 240)}`);
-  }
-  return res.json();
-}
-
-// ─── Store live data in Upstash ───────────────────────────────────────────────
+// ─── Store live data in Pinecone ───────────────────────────────────────────────
 
 /**
- * Store a live data result in Upstash Vector under the `realworld:` namespace.
+ * Store a live data result in Pinecone Vector under the `realworld:` namespace.
  * Tagged with `expires_at` so stale entries can be filtered out.
  */
 export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> {
-  if (!isUpstashReady() || result.content.trim().length < 20) return;
+  if (!isPineconeReady() || result.content.trim().length < 20) return;
 
   const id = `realworld:${result.type}:${Date.now()}:${randomUUID().slice(0, 8)}`;
   const expiresAt = new Date(Date.now() + result.ttlHours * 3_600_000).toISOString();
-  // Keep content short — a 1536-dim manual vector serialises to ~25 KB of JSON.
-  // Add metadata and even a 300-char preview and you are already near Upstash's
-  // ~40 KB per-request limit. Cap the embedding input at 512 chars and store
-  // only a 200-char preview in metadata so the total payload stays well under
-  // the limit regardless of index dimension.
+  // Cache a compact preview; live results can be fetched again when needed.
   const embedText = `[${result.type.toUpperCase()}] ${result.content.slice(0, 400)}`;
-  const mode = await getUpstashVectorMode();
-  const vector = mode === 'manual' ? await generateEmbedding(embedText.slice(0, 512)) : undefined;
+
+  const vector = await generateEmbedding(embedText.slice(0, 512));
 
   try {
-    await upstashPost('/upsert', {
+    await vectorPost('/upsert', {
       vectors: [{
         id,
-        // auto-embed: send a short data string; manual: send the vector only.
-        // Never send both — Upstash rejects payloads with both fields.
-        ...(mode === 'auto-embed' ? { data: embedText.slice(0, 512) } : { vector }),
+        vector,
         metadata: {
           namespace: 'realworld',
           type: result.type,
@@ -171,38 +138,26 @@ export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> 
 }
 
 /**
- * Query Upstash for non-expired realworld chunks matching the query.
+ * Query Pinecone for non-expired realworld chunks matching the query.
  */
 export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<string[]> {
-  if (!isUpstashReady()) return [];
+  if (!isPineconeReady()) return [];
 
-  const mode = await getUpstashVectorMode();
-  const vector = mode === 'manual' ? await generateEmbedding(queryText.slice(0, 1500)) : undefined;
-  const semantic = mode === 'auto-embed'
-    ? { data: queryText.slice(0, 1500) }
-    : { vector };
+  const vector = await generateEmbedding(queryText.slice(0, 1500));
+  const semantic = { vector };
   const now = new Date().toISOString();
 
   let payload: any;
   try {
-    payload = await upstashPost('/query', {
+    payload = await vectorPost('/query', {
       ...semantic,
       topK: topK * 3,
       includeMetadata: true,
       includeData: true,
-      filter: `namespace = 'realworld'`,
+      filter: { namespace: { $eq: 'realworld' } },
     });
   } catch {
-    try {
-      payload = await upstashPost('/query', {
-        ...semantic,
-        topK: topK * 5,
-        includeMetadata: true,
-        includeData: true,
-      });
-    } catch {
-      return [];
-    }
+    return []; // Fail closed; never retry without the metadata scope.
   }
 
   const matches: any[] = payload?.result ?? payload?.matches ?? [];
@@ -277,7 +232,7 @@ async function fetchLiveWebSearch(query: string): Promise<LiveDataResult | null>
  *   2. Cached realworld RAG chunks (if any match the query)
  *   3. Fresh live data (if query is time-sensitive and no cache hit)
  *
- * Fresh results are stored back to Upstash for future reuse.
+ * Fresh results are stored back to Pinecone for future reuse.
  */
 export async function getRealtimeContext(
   query: string,
@@ -296,7 +251,7 @@ export async function getRealtimeContext(
         type: queryType === 'news' ? 'news' : 'web',
         query,
         content: c,
-        source: 'upstash-cache',
+        source: 'pinecone-cache',
         fetchedAt: new Date().toISOString(),
         ttlHours: 1,
       })),
@@ -329,7 +284,7 @@ export async function getRealtimeContext(
       type: 'web' as const,
       query,
       content: c,
-      source: 'upstash-cache',
+      source: 'pinecone-cache',
       fetchedAt: new Date().toISOString(),
       ttlHours: 1,
     })),
