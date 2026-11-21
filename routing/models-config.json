@@ -87,6 +87,11 @@
         }
       ],
       "priority": 110,
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500,
+        "tokensPerMinute": 250000
+      },
       "defaultParams": {
         "temperature": 0.7,
         "topP": 0.9,
@@ -113,6 +118,11 @@
         }
       ],
       "priority": 108,
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500,
+        "tokensPerMinute": 250000
+      },
       "defaultParams": {
         "temperature": 0.7,
         "topP": 0.9,
@@ -139,6 +149,11 @@
         }
       ],
       "priority": 105,
+      "rateLimit": {
+        "requestsPerMinute": 15,
+        "requestsPerDay": 1500,
+        "tokensPerMinute": 250000
+      },
       "defaultParams": {
         "temperature": 0.7,
         "topP": 0.9,
@@ -165,6 +180,11 @@
         }
       ],
       "priority": 120,
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 1000,
+        "tokensPerMinute": 8000
+      },
       "defaultParams": {
         "temperature": 0.6,
         "topP": 0.9,
@@ -191,6 +211,11 @@
         }
       ],
       "priority": 118,
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 1000,
+        "tokensPerMinute": 8000
+      },
       "defaultParams": {
         "temperature": 0.6,
         "topP": 0.9,
@@ -217,6 +242,11 @@
         }
       ],
       "priority": 116,
+      "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerDay": 1000,
+        "tokensPerMinute": 8000
+      },
       "defaultParams": {
         "temperature": 0.6,
         "topP": 0.9,

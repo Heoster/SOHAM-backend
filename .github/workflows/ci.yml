@@ -42,3 +42,6 @@ jobs:
 
       - name: Run output sanitizer checks
         run: npm run test:sanitizer
+
+      - name: Run token-detector and fallback checks
+        run: npm run test:token-fallback

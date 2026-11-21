@@ -19,11 +19,13 @@ interface IntentPolicy {
 
 const DEFAULT: IntentPolicy = {
   category: 'general',
-  // groq-qwen3.8-27b sits between the two GPT-OSS models so a TPM hit on 20B
-  // falls to Qwen before trying Google/OpenRouter. This prevents the chain from
-  // exhausting all options when 20B is rate-limited and Gemini is slow.
+  // groq-qwen3.8-27b and groq-gpt-oss-120b follow 20B so a TPM hit on 20B
+  // falls through to Qwen/120B (separate Groq TPM pools) before Google/OpenRouter.
+  // token-budget.ts dynamically shifts this order based on detected token count
+  // and live per-model TPM usage.
   preferred: [
-    'groq-gpt-oss-20b', 'groq-qwen3.8-27b', 'gemini-3.6-flash', 'gemini-3.5-flash-lite',
+    'groq-gpt-oss-20b', 'groq-qwen3.8-27b', 'groq-gpt-oss-120b',
+    'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash',
     'openrouter-free-router', 'cloudflare-granite-4-micro', 'cloudflare-gpt-oss-20b',
   ],
   temperature: 0.7,
