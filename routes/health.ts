@@ -7,7 +7,7 @@
  *  1. system          — Node version, memory, uptime, platform, env
  *  2. providers       — Live probe of every AI provider API key
  *  3. search          — Tavily + Firecrawl + free fallbacks status
- *  4. memory          — Supabase + Upstash connectivity
+ *  4. memory          — Supabase + Pinecone connectivity
  *  5. image           — Cloudflare + Pollinations
  *  6. voice           — Groq TTS + STT
  *  7. endpoints       — Every registered route with method + path + status
@@ -290,15 +290,9 @@ async function probeSupabase(): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
-async function probeUpstash(): Promise<void> {
-  const url = process.env.UPSTASH_VECTOR_REST_URL;
-  const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
-  if (!url || !token) throw new Error('UPSTASH_VECTOR_REST_URL or TOKEN not set');
-  const res = await fetch(`${url}/info`, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(4000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+async function probePinecone(): Promise<void> {
+  const { pineconeRequest } = await import('../memory/pinecone-vector');
+  await pineconeRequest('/describe_index_stats', {}, 4000);
 }
 
 async function probeCloudflare(): Promise<void> {
@@ -573,10 +567,10 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       'Cross-device chat history + image rate limits (PostgreSQL)',
       'SUPABASE_URL + SUPABASE_ANON_KEY', 'https://supabase.com/dashboard'
     ),
-    upstash: envCheck(
-      ['UPSTASH_VECTOR_REST_URL', 'UPSTASH_VECTOR_REST_TOKEN'], false,
+    pinecone: envCheck(
+      ['PINECONE_INDEX_HOST', 'PINECONE_API_KEY'], false,
       'RAG vector memory — semantic similarity search',
-      'UPSTASH_VECTOR_REST_URL + UPSTASH_VECTOR_REST_TOKEN', 'https://console.upstash.com/vector'
+      'PINECONE_INDEX_HOST + PINECONE_API_KEY', 'https://app.pinecone.io'
     ),
   };
 
@@ -609,7 +603,7 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       [search, 'cricapi', probeCricApi], [search, 'alphaVantage', probeAlphaVantage],
       [search, 'duckduckgo', probeDuckDuckGo], [search, 'wikipedia', probeWikipedia],
       [search, 'openMeteo', probeOpenMeteo], [search, 'coinGecko', probeCoinGecko],
-      [memory, 'supabase', probeSupabase], [memory, 'upstash', probeUpstash],
+      [memory, 'supabase', probeSupabase], [memory, 'pinecone', probePinecone],
       [image, 'cloudflare', probeCloudflare], [image, 'pollinations', probePollinations],
     ];
     await Promise.all(checks.map(async ([group, name, fn]) => {

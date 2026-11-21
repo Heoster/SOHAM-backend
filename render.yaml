@@ -45,13 +45,13 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: UPSTASH_VECTOR_REST_URL
+      - key: PINECONE_INDEX_HOST
         sync: false
-      - key: UPSTASH_VECTOR_REST_TOKEN
+      - key: PINECONE_API_KEY
         sync: false
       # Distributed rate limiting for multi-instance deployments (strongly
       # recommended once you scale beyond 1 instance). Optional — without it,
-      # per-instance in-memory limiting is used. Same Upstash account as Vector.
+      # per-instance in-memory limiting is used. Independent of Pinecone vector storage.
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
@@ -93,6 +93,6 @@ services:
 #   1. UPSTASH_REDIS_REST_URL / TOKEN set (distributed rate limiter)
 #   2. ALLOWED_ORIGINS explicitly set (prod default is now fail-closed)
 #   3. Statelessness: this service is stateless apart from the rate limiter —
-#      chat history lives in Supabase/Upstash, not in process memory.
+#      chat history lives in Supabase/Pinecone, not in process memory.
 #   4. Health checks: /api/health/live (liveness) and /api/health/ready (readiness)
 #      are unauthenticated and cheap — wire them into any LB you put in front.

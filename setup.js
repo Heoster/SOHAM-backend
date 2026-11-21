@@ -25,8 +25,8 @@ ENABLE_CLOUDFLARE_IMAGE_AI=false
 TAVILY_API_KEY=
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
-UPSTASH_VECTOR_REST_URL=
-UPSTASH_VECTOR_REST_TOKEN=
+PINECONE_INDEX_HOST=
+PINECONE_API_KEY=
 `;
     fs.writeFileSync(envPath, template);
     console.log('⚠️ Please update .env with your API keys.');

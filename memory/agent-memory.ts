@@ -20,21 +20,9 @@ function getSupabaseConfig() {
   };
 }
 
-function getUpstashConfig() {
-  return {
-    url: process.env.UPSTASH_VECTOR_REST_URL || process.env.UPSTASH_VECTOR_URL || '',
-    token: process.env.UPSTASH_VECTOR_REST_TOKEN || process.env.UPSTASH_VECTOR_TOKEN || '',
-  };
-}
-
 function isSupabaseConfigured(): boolean {
   const cfg = getSupabaseConfig();
   return Boolean(cfg.url && cfg.key);
-}
-
-function isUpstashConfigured(): boolean {
-  const cfg = getUpstashConfig();
-  return Boolean(cfg.url && cfg.token);
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 6000): Promise<Response> {
@@ -100,99 +88,11 @@ export async function persistCrossDeviceHistory(
   }
 }
 
-// ─── RAG context (Upstash Vector) ─────────────────────────────────────────────
+// ─── RAG context (Pinecone Vector) ─────────────────────────────────────────────
 
 /**
- * Query Upstash Vector for semantically similar past messages.
+ * Query Pinecone Vector for semantically similar past messages.
  * Uses real Google embeddings when available, hash-embedding as fallback.
  * Applies recency weighting: recent memories score higher.
  */
-export async function queryRagContext(userId: string | undefined, text: string, topK = 5): Promise<string[]> {
-  if (!userId || !isUpstashConfigured()) return [];
-  const { url, token } = getUpstashConfig();
-
-  const vector = await generateEmbedding(text);
-
-  try {
-    const response = await fetchWithTimeout(
-      `${url.replace(/\/$/, '')}/query`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ vector, topK: topK * 3, includeMetadata: true, includeData: true }),
-      },
-      8000
-    );
-    if (!response.ok) return [];
-
-    const payload = (await response.json()) as { result?: VectorMatch[]; matches?: VectorMatch[] };
-    const matches = payload.result || payload.matches || [];
-
-    const now = Date.now();
-
-    // Filter to this user, apply recency weighting, re-rank
-    const scored = matches
-      .filter(m => {
-        const uid = m.metadata?.user_id as string | undefined;
-        return uid === userId || String(m.id).startsWith(`${userId}:`);
-      })
-      .map(m => {
-        const semanticScore = m.score ?? 0;
-        // Recency: decay over 7 days (604800000 ms)
-        const createdAt = m.metadata?.created_at as string | undefined;
-        const ageMs = createdAt ? now - new Date(createdAt).getTime() : 7 * 24 * 3600 * 1000;
-        const recencyScore = Math.exp(-ageMs / (7 * 24 * 3600 * 1000)); // 0–1, 1 = just now
-        const finalScore = semanticScore * 0.75 + recencyScore * 0.25;
-        const text = typeof m.data === 'string' ? m.data : (m.metadata?.text as string | undefined) || '';
-        return { text, finalScore };
-      })
-      .filter(m => m.text.length > 0)
-      .sort((a, b) => b.finalScore - a.finalScore)
-      .slice(0, topK)
-      .map(m => m.text);
-
-    return scored;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Upsert a message into Upstash Vector using real embeddings.
- */
-export async function upsertRagMemory(
-  userId: string | undefined,
-  role: 'user' | 'assistant',
-  text: string
-): Promise<void> {
-  if (!userId || !isUpstashConfigured() || text.trim().length < 10) return;
-  const { url, token } = getUpstashConfig();
-  const id = `${userId}:${role}:${Date.now()}:${randomUUID().slice(0, 8)}`;
-  const vector = await generateEmbedding(text);
-
-  try {
-    await fetchWithTimeout(
-      `${url.replace(/\/$/, '')}/upsert`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          vectors: [{
-            id,
-            vector,
-            metadata: {
-              user_id: userId,
-              role,
-              text: text.slice(0, 1000),
-              created_at: new Date().toISOString(),
-            },
-            data: text.slice(0, 1200),
-          }],
-        }),
-      },
-      8000
-    );
-  } catch {
-    // fail open
-  }
-}
+export { queryRagContext, upsertRagMemory } from './enhanced-rag';

@@ -9,8 +9,8 @@
  *   LAYER 2 — USER PROFILE         (Supabase user_profiles)
  *   LAYER 3 — LONG-TERM MEMORY     (Supabase memories — cosine search)
  *   LAYER 4 — SHORT-TERM HISTORY   (Supabase chat_history — cross-device)
- *   LAYER 5 — SEMANTIC RAG         (Upstash Vector — private namespace)
- *   LAYER 6 — PUBLIC KNOWLEDGE     (Upstash Vector — public namespace)
+ *   LAYER 5 — SEMANTIC RAG         (Pinecone Vector — private namespace)
+ *   LAYER 6 — PUBLIC KNOWLEDGE     (Pinecone Vector — public namespace)
  *   LAYER 7 — UPLOADED DOCUMENTS   (Document RAG — user's own files, namespace "docs")
  *
  * Resilience: every layer is fetched independently via Promise.allSettled.
@@ -36,7 +36,7 @@ import {
 import { getMemorySystemService } from '../memory/memory-system-service';
 import { getMemoryExtractionService } from '../memory/memory-extraction-service';
 import { getUserProfileService } from '../memory/user-profile-service';
-import { getUpstashKnowledgeService } from '../memory/upstash-knowledge-service';
+import { getPineconeKnowledgeService } from '../memory/pinecone-knowledge-service';
 import {
   getCurrentDateTimeContext,
   buildDateTimePromptLine,
@@ -156,7 +156,7 @@ export async function buildSohamPromptContext(input: {
   const degradedLayers: string[] = [];
 
   const profileService   = getUserProfileService();
-  const knowledgeService = getUpstashKnowledgeService();
+  const knowledgeService = getPineconeKnowledgeService();
 
   // Analyse query type for smarter realtime fetching.
   // Respect the agent planner: if a plan already ran and did NOT pick a live
@@ -215,7 +215,7 @@ export async function buildSohamPromptContext(input: {
     { datetime: getCurrentDateTimeContext(), liveData: undefined },
     'realtime', degradedLayers);
   const documentHits      = settled(documentHits$,    [],    'documents',    degradedLayers);
-  // Realworld cache — Upstash read (may embed via Google first) — parallel now, not serial
+  // Realworld cache — Pinecone read (may embed via Google first) — parallel now, not serial
   const realtimeChunks    = settled(realtimeChunks$,  [],    'realtime-chunks', degradedLayers);
 
   const toolsUsed = agentRun.results;
@@ -226,7 +226,7 @@ export async function buildSohamPromptContext(input: {
   const allRealtimeContent = [
     ...realtimeChunks,
     ...liveDataItems
-      .filter(d => d.source !== 'upstash-cache')
+      .filter(d => d.source !== 'pinecone-cache')
       .map(d => d.content),
   ].filter(Boolean);
 

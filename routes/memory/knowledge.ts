@@ -1,5 +1,5 @@
 /**
- * Public Knowledge Routes (Upstash Vector)
+ * Public Knowledge Routes (Pinecone Vector)
  *
  * POST /api/memory/knowledge          → Store a new public knowledge entry
  * POST /api/memory/knowledge/search   → Search public knowledge
@@ -8,8 +8,8 @@
  */
 
 import type { Request, Response } from 'express';
-import { getUpstashKnowledgeService } from '../../memory/upstash-knowledge-service';
-import type { KnowledgeType } from '../../memory/upstash-knowledge-service';
+import { getPineconeKnowledgeService } from '../../memory/pinecone-knowledge-service';
+import type { KnowledgeType } from '../../memory/pinecone-knowledge-service';
 
 const VALID_TYPES: KnowledgeType[] = [
   'CORRECTION', 'SUGGESTION', 'FACT', 'DEFINITION', 'EXAMPLE', 'BEST_PRACTICE', 'FAQ',
@@ -30,7 +30,7 @@ export async function storeKnowledgeHandler(req: Request, res: Response): Promis
       return;
     }
 
-    const service = getUpstashKnowledgeService();
+    const service = getPineconeKnowledgeService();
     const id = await service.storeKnowledge({
       type: type ?? 'FACT',
       question: question ?? undefined,
@@ -62,7 +62,7 @@ export async function searchKnowledgeHandler(req: Request, res: Response): Promi
       return;
     }
 
-    const service = getUpstashKnowledgeService();
+    const service = getPineconeKnowledgeService();
     const results = await service.searchKnowledge(
       query.trim(),
       Math.min(20, Math.max(1, Number(topK) || 5)),
@@ -109,7 +109,7 @@ export async function storeCorrectionHandler(req: Request, res: Response): Promi
       return;
     }
 
-    const service = getUpstashKnowledgeService();
+    const service = getPineconeKnowledgeService();
     const id = await service.storeCorrection(
       String(originalQuery).trim(),
       String(correctedAnswer).trim(),
@@ -141,7 +141,7 @@ export async function storeSuggestionHandler(req: Request, res: Response): Promi
       return;
     }
 
-    const service = getUpstashKnowledgeService();
+    const service = getPineconeKnowledgeService();
     const id = await service.storeSuggestion(
       String(context).trim(),
       String(suggestion).trim(),

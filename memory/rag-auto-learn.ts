@@ -5,7 +5,7 @@
  *
  * After every AI response, this service:
  *   1. Extracts factual claims from tool results (news, web search, weather, etc.)
- *   2. Stores them as public knowledge in Upstash Vector
+ *   2. Stores them as public knowledge in Pinecone Vector
  *   3. Stores the Q→A pair so future identical/similar queries hit the cache
  *   4. Detects corrections in the user's message and stores them
  *   5. Detects suggestions and stores them
@@ -20,7 +20,7 @@
  *   - Suggestions → SUGGESTION entries (permanent, medium confidence)
  */
 
-import { getUpstashKnowledgeService } from './upstash-knowledge-service';
+import { getPineconeKnowledgeService } from './pinecone-knowledge-service';
 import { storeRealtimeChunk } from './realtime-knowledge-service';
 import type { SohamToolResult } from '../tools/agent-tools';
 
@@ -83,7 +83,7 @@ export async function autoLearnQAPair(
 
   if (!isFactual || !isSubstantive || !isNotConversational) return;
 
-  const service = getUpstashKnowledgeService();
+  const service = getPineconeKnowledgeService();
   await service.storeKnowledge({
     type: 'FAQ',
     question: question.slice(0, 200),
@@ -112,7 +112,7 @@ export async function autoDetectCorrection(
   const isCorrection = correctionPatterns.some(p => p.test(userMessage.trim()));
   if (!isCorrection || userMessage.length < 20 || previousAssistantMessage.length < 20) return;
 
-  const service = getUpstashKnowledgeService();
+  const service = getPineconeKnowledgeService();
   await service.storeCorrection(
     previousAssistantMessage.slice(0, 300),
     userMessage.slice(0, 500),
@@ -137,7 +137,7 @@ export async function autoDetectSuggestion(
   const isSuggestion = suggestionPatterns.some(p => p.test(userMessage.trim()));
   if (!isSuggestion || userMessage.length < 30) return;
 
-  const service = getUpstashKnowledgeService();
+  const service = getPineconeKnowledgeService();
   await service.storeSuggestion(
     context.slice(0, 200),
     userMessage.slice(0, 500),
