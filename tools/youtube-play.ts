@@ -311,9 +311,24 @@ function cleanTitle(raw: string): string {
   return t.slice(0, 200);
 }
 
+/**
+ * True when an extracted link label is actually thumbnail/duration/CTA noise
+ * (e.g. "", "3:42", "1:02:15", "Now playing", "Watch", "Play", "YouTube video <id>")
+ * rather than the video's real title.
+ */
+function isNoiseOrPlaceholderTitle(title: string, videoId: string): boolean {
+  const t = title.trim();
+  if (!t || t.length < 2) return true;
+  if (t === `YouTube video ${videoId}`) return true;
+  if (/^\d{1,2}(?::\d{2}){1,2}$/.test(t)) return true; // video duration badge like "3:42"
+  if (/^(?:now playing|watch|watch now|play|play now|shorts|live|hd|4k|cc|subtitles?)$/i.test(t)) return true;
+  return false;
+}
+
 interface RawHit {
   id: string;
   title: string;
+  hasRealTitle: boolean;
   url: string;
   index: number;
   markdown: boolean;
@@ -326,17 +341,25 @@ interface RawHit {
  */
 export function parseYouTubeSearchMarkdown(markdown: string): YouTubeVideoCandidate[] {
   const hits: RawHit[] = [];
-  const seenLinks = new Set<string>();
+  const seenUrls = new Set<string>();
+  const seenRealTitleUrls = new Set<string>();
 
   // 1) Markdown links [title](url)
   for (const match of markdown.matchAll(MARKDOWN_LINK_RE)) {
     const [, text, url] = match;
     const id = extractVideoId(url);
-    if (!id || seenLinks.has(url)) continue;
-    seenLinks.add(url);
+    if (!id) continue;
+    const cleaned = cleanTitle(text);
+    const real = !isNoiseOrPlaceholderTitle(cleaned, id);
+    // Allow a later link for the same URL to be recorded if we haven't captured
+    // a real title for that URL yet (e.g. "[3:42](url)" followed by "[Song Title](url)").
+    if (seenRealTitleUrls.has(url) || (seenUrls.has(url) && !real)) continue;
+    seenUrls.add(url);
+    if (real) seenRealTitleUrls.add(url);
     hits.push({
       id,
-      title: cleanTitle(text) || `YouTube video ${id}`,
+      title: real ? cleaned : `YouTube video ${id}`,
+      hasRealTitle: real,
       url,
       index: match.index ?? 0,
       markdown: true,
@@ -346,13 +369,14 @@ export function parseYouTubeSearchMarkdown(markdown: string): YouTubeVideoCandid
   // 2) Bare URLs not already captured via markdown link syntax
   for (const match of markdown.matchAll(BARE_URL_RE)) {
     const url = match[0];
-    if (seenLinks.has(url)) continue;
+    if (seenUrls.has(url)) continue;
     const id = extractVideoId(url);
     if (!id) continue;
-    seenLinks.add(url);
+    seenUrls.add(url);
     hits.push({
       id,
       title: `YouTube video ${id}`, // no anchor text available
+      hasRealTitle: false,
       url,
       index: match.index ?? 0,
       markdown: false,
@@ -365,11 +389,18 @@ export function parseYouTubeSearchMarkdown(markdown: string): YouTubeVideoCandid
   const watchHits = hits.filter(h => !isShortsUrl(h.url));
   const pool = watchHits.length > 0 ? watchHits : hits;
 
-  // Page order is the ranking; dedupe by video id, keep first occurrence
+  // Page order is the ranking; dedupe by video id, but upgrade placeholder
+  // thumbnail/duration hits if a later link for the same id carries the real title.
   pool.sort((a, b) => a.index - b.index);
   const byId = new Map<string, RawHit>();
   for (const hit of pool) {
-    if (!byId.has(hit.id)) byId.set(hit.id, hit);
+    const existing = byId.get(hit.id);
+    if (!existing) {
+      byId.set(hit.id, { ...hit });
+    } else if (!existing.hasRealTitle && hit.hasRealTitle) {
+      existing.title = hit.title;
+      existing.hasRealTitle = true;
+    }
   }
 
   // Best-effort channel extraction: look for a @handle /channel/ link within
@@ -512,6 +543,41 @@ export async function playYouTubeVideo(rawQuery: string): Promise<YouTubePlayRes
   return task;
 }
 
+/**
+ * Enrich candidates whose title fell back to "YouTube video <id>" (e.g. when
+ * Jina/Firecrawl only exposed thumbnail links or bare watch URLs) using
+ * YouTube's free, keyless oEmbed endpoint in parallel.
+ */
+async function enrichMissingTitlesViaOEmbed(
+  candidates: YouTubeVideoCandidate[],
+): Promise<YouTubeVideoCandidate[]> {
+  const needsLookup = candidates.some(c => isNoiseOrPlaceholderTitle(c.title, c.videoId));
+  if (!needsLookup) return candidates;
+
+  return Promise.all(
+    candidates.map(async candidate => {
+      if (!isNoiseOrPlaceholderTitle(candidate.title, candidate.videoId)) return candidate;
+      try {
+        const res = await fetch(
+          `https://www.youtube.com/oembed?url=${encodeURIComponent(candidate.watchUrl)}&format=json`,
+          { signal: AbortSignal.timeout(2_500) },
+        );
+        if (!res.ok) return candidate;
+        const meta = (await res.json()) as { title?: string; author_name?: string };
+        const title = meta?.title ? cleanTitle(meta.title) : '';
+        const channel = meta?.author_name ? cleanTitle(meta.author_name) : candidate.channel;
+        return {
+          ...candidate,
+          title: title || candidate.title,
+          ...(channel ? { channel } : {}),
+        };
+      } catch {
+        return candidate;
+      }
+    }),
+  );
+}
+
 async function resolveYouTubePlay(
   query: string,
   searchUrl: string,
@@ -521,8 +587,9 @@ async function resolveYouTubePlay(
   try {
     logger.info('[YouTubePlay] Jina Reader fetch', { query, searchUrl });
     const markdown = await fetchJinaReaderMarkdown(searchUrl);
-    const candidates = parseYouTubeSearchMarkdown(markdown);
-    if (candidates.length > 0) {
+    const parsed = parseYouTubeSearchMarkdown(markdown);
+    if (parsed.length > 0) {
+      const candidates = await enrichMissingTitlesViaOEmbed(parsed);
       return buildResult('jina', query, searchUrl, candidates, t0);
     }
     logger.warn('[YouTubePlay] Jina returned no parseable videos; falling back to Firecrawl', { query });
@@ -536,8 +603,9 @@ async function resolveYouTubePlay(
   // ── Attempt 2: Firecrawl scrape ─────────────────────────────────────────
   try {
     const markdown = await fetchFirecrawlMarkdown(searchUrl);
-    const candidates = parseYouTubeSearchMarkdown(markdown);
-    if (candidates.length > 0) {
+    const parsed = parseYouTubeSearchMarkdown(markdown);
+    if (parsed.length > 0) {
+      const candidates = await enrichMissingTitlesViaOEmbed(parsed);
       return buildResult('firecrawl', query, searchUrl, candidates, t0);
     }
     logger.warn('[YouTubePlay] Firecrawl returned no parseable videos', { query });

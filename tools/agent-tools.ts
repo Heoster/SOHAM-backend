@@ -170,15 +170,17 @@ export function detectToolIntent(message: string): ToolIntent | null {
     return { tool: 'news_search', query: sanitizeQuery(normalized) || 'world news today' };
   }
 
-  // ── General web search — current/live/factual ─────────────────────────────
+  // ── General web search — ONLY explicit search asks or live/current facts ─
+  // Do NOT trigger web_search on every "who/what/where/when" or ordinary words
+  // like "current" / "today" / "live" (e.g. "what is recursion", "fix my
+  // current code"); let the model answer those directly without API cost/latency.
   if (
-    /\b(current|latest|today|live|recent)\b/i.test(lower) ||
-    /\b(vice president of|prime minister of|president of|ceo of|founder of|governor of|population of|capital of|currency of)\b/i.test(lower) ||
-    /^(who|what|where|when)\s+(is|are|was|were|did|does|do)\b/i.test(lower)
+    /\b(vice president of|prime minister of|president of|ceo of|founder of|governor of|chief minister of|population of|capital of|currency of)\b/i.test(lower) ||
+    /\b(latest\s+(?:version|release|news|update|price|model|ios|android|iphone)|current\s+(?:president|prime minister|vp|ceo|price|version|status|rate|value|score|standings|rankings)|right now|as of today|who won|who is leading|release date of)\b/i.test(lower)
   ) {
     return { tool: 'web_search', query: sanitizeQuery(normalized) };
   }
-  if (/\b(search|look up|find on web|web search|research)\b/i.test(lower)) {
+  if (/\b(search(?:\s+the\s+web|\s+online|\s+for)?|look up|find on(?:\s+the)?\s+web|web search|google)\b/i.test(lower)) {
     return { tool: 'web_search', query: sanitizeQuery(normalized) };
   }
 
@@ -667,7 +669,7 @@ async function playVideoTool(query: string, history: ConversationTurnLike[] = []
         `If the embedded player doesn't load, open it in a new tab: ${result.watchUrl}`,
       sources: [
         { title: result.title ?? result.query, url: result.watchUrl },
-        ...result.candidates.slice(1, 4).map(candidate => ({ title: candidate.title, url: candidate.watchUrl })),
+        ...result.candidates.slice(1, 5).map(candidate => ({ title: candidate.title, url: candidate.watchUrl })),
       ],
       openUrl: result.watchUrl,
       embedUrl: result.embedUrl,
