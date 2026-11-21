@@ -103,8 +103,7 @@ export class GroqAdapter extends BaseProviderAdapter {
 
     try {
       for (let round = 0; round <= MAX_LOCAL_TOOL_ROUNDS; round++) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        const attempt = this.createAttemptAbort(request.signal, 30000);
         let response: Response;
         try {
           response = await fetch(GROQ_API_URL, {
@@ -119,10 +118,10 @@ export class GroqAdapter extends BaseProviderAdapter {
               ...(tools.length > 0 && { tools, tool_choice: 'auto' }),
               stream: false,
             }),
-            signal: controller.signal,
+            signal: attempt.signal,
           });
         } finally {
-          clearTimeout(timeoutId);
+          attempt.cleanup();
         }
 
         if (!response.ok) {
@@ -214,38 +213,36 @@ export class GroqAdapter extends BaseProviderAdapter {
 
     const messages = this.buildMessages(prompt, systemPrompt, history);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 55000);
-
-    const response = await fetch(GROQ_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: model.modelId,
-        messages,
-        temperature: mergedParams.temperature,
-        top_p: mergedParams.topP,
-        max_completion_tokens: mergedParams.maxOutputTokens,
-        stream: true,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok || !response.body) {
-      const errorText = await response.text().catch(() => '');
-      throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'groq', model.id);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const attempt = this.createAttemptAbort(request.signal, 55000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
     try {
+      const response = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model.modelId,
+          messages,
+          temperature: mergedParams.temperature,
+          top_p: mergedParams.topP,
+          max_completion_tokens: mergedParams.maxOutputTokens,
+          stream: true,
+        }),
+        signal: attempt.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        const errorText = await response.text().catch(() => '');
+        throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'groq', model.id);
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -273,7 +270,11 @@ export class GroqAdapter extends BaseProviderAdapter {
         }
       }
     } finally {
-      reader.releaseLock();
+      attempt.cleanup();
+      if (reader) {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
     }
   }
 

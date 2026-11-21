@@ -55,28 +55,29 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
     const messages = this.buildMessages(prompt, systemPrompt, history);
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      const response = await fetch(OPENROUTER_API_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'https://soham-ai.vercel.app',
-          'X-Title': 'SOHAM',
-        },
-        body: JSON.stringify({
-          model: model.modelId,
-          messages,
-          temperature: mergedParams.temperature,
-          top_p: mergedParams.topP,
-          max_tokens: mergedParams.maxOutputTokens,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
+      const attempt = this.createAttemptAbort(request.signal, 30000);
+      let response: Response;
+      try {
+        response = await fetch(OPENROUTER_API_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'https://soham-ai.vercel.app',
+            'X-Title': 'SOHAM',
+          },
+          body: JSON.stringify({
+            model: model.modelId,
+            messages,
+            temperature: mergedParams.temperature,
+            top_p: mergedParams.topP,
+            max_tokens: mergedParams.maxOutputTokens,
+          }),
+          signal: attempt.signal,
+        });
+      } finally {
+        attempt.cleanup();
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -120,40 +121,38 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
 
     const messages = this.buildMessages(prompt, systemPrompt, history);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 55000);
-
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'https://soham-ai.vercel.app',
-        'X-Title': 'SOHAM',
-      },
-      body: JSON.stringify({
-        model: model.modelId,
-        messages,
-        temperature: mergedParams.temperature,
-        top_p: mergedParams.topP,
-        max_tokens: mergedParams.maxOutputTokens,
-        stream: true,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok || !response.body) {
-      const errorText = await response.text().catch(() => '');
-      throw createUserFriendlyError(new Error(`OpenRouter error ${response.status}: ${errorText}`), 'openrouter', model.id);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const attempt = this.createAttemptAbort(request.signal, 55000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
     try {
+      const response = await fetch(OPENROUTER_API_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || 'https://soham-ai.vercel.app',
+          'X-Title': 'SOHAM',
+        },
+        body: JSON.stringify({
+          model: model.modelId,
+          messages,
+          temperature: mergedParams.temperature,
+          top_p: mergedParams.topP,
+          max_tokens: mergedParams.maxOutputTokens,
+          stream: true,
+        }),
+        signal: attempt.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        const errorText = await response.text().catch(() => '');
+        throw createUserFriendlyError(new Error(`OpenRouter error ${response.status}: ${errorText}`), 'openrouter', model.id);
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -181,7 +180,11 @@ export class OpenRouterAdapter extends BaseProviderAdapter {
         }
       }
     } finally {
-      reader.releaseLock();
+      attempt.cleanup();
+      if (reader) {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
     }
   }
 

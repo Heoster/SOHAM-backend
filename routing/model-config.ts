@@ -46,6 +46,7 @@ export interface ModelConfig {
   rateLimit?: {
     requestsPerMinute: number;
     requestsPerDay: number;
+    tokensPerMinute?: number;
   };
 }
 
@@ -100,6 +101,7 @@ export const ModelConfigSchema = z.object({
   rateLimit: z.object({
     requestsPerMinute: z.number(),
     requestsPerDay: z.number(),
+    tokensPerMinute: z.number().optional(),
   }).optional(),
 });
 

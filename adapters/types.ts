@@ -24,6 +24,8 @@ export interface GenerateRequest {
   groqBuiltinTools?: GroqBuiltinTool[];
   /** Enable the server-side allowlisted local tool loop for Groq function-calling models. */
   enableLocalToolCalling?: boolean;
+  /** Optional abort signal from the caller/fallback watchdog to cancel stalled requests immediately. */
+  signal?: AbortSignal;
 }
 
 export interface GenerateResponse {
@@ -63,5 +65,29 @@ export abstract class BaseProviderAdapter implements ProviderAdapter {
 
   protected createResponse(text: string, modelId: string, usage?: { promptTokens: number; completionTokens: number }): GenerateResponse {
     return { text, modelUsed: modelId, usage };
+  }
+
+  /**
+   * Combine an internal timeout with an optional caller AbortSignal so
+   * watchdogs or client disconnects abort in-flight fetch/stream calls cleanly.
+   */
+  protected createAttemptAbort(externalSignal?: AbortSignal, timeoutMs = 55_000): {
+    signal: AbortSignal;
+    cleanup: () => void;
+  } {
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    return {
+      signal: controller.signal,
+      cleanup: () => {
+        clearTimeout(timeoutId);
+        externalSignal?.removeEventListener('abort', onExternalAbort);
+      },
+    };
   }
 }

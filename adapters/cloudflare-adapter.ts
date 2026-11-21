@@ -29,16 +29,18 @@ export class CloudflareAdapter extends BaseProviderAdapter {
   }
 
   async *generateStream(request: GenerateRequest): AsyncGenerator<string, void, unknown> {
-    const response = await this.request(request, true);
-    if (!response.ok || !response.body) {
-      const body = await response.text().catch(() => '');
-      throw createUserFriendlyError(new Error(`Cloudflare HTTP ${response.status}: ${body}`), 'cloudflare', request.model.id);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const attempt = this.createAttemptAbort(request.signal, 55000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
+      const response = await this.request({ ...request, signal: attempt.signal }, true, attempt.signal);
+      if (!response.ok || !response.body) {
+        const body = await response.text().catch(() => '');
+        throw createUserFriendlyError(new Error(`Cloudflare HTTP ${response.status}: ${body}`), 'cloudflare', request.model.id);
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -64,11 +66,15 @@ export class CloudflareAdapter extends BaseProviderAdapter {
         }
       }
     } finally {
-      reader.releaseLock();
+      attempt.cleanup();
+      if (reader) {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
     }
   }
 
-  private async request(request: GenerateRequest, stream: boolean): Promise<Response> {
+  private async request(request: GenerateRequest, stream: boolean, streamSignal?: AbortSignal): Promise<Response> {
     if (process.env.ENABLE_CLOUDFLARE_TEXT_AI !== 'true') {
       throw createUserFriendlyError(new Error('Cloudflare Workers AI text is disabled; set ENABLE_CLOUDFLARE_TEXT_AI=true to opt in'), 'cloudflare', request.model.id);
     }
@@ -80,8 +86,8 @@ export class CloudflareAdapter extends BaseProviderAdapter {
 
     const { model, prompt, systemPrompt, history, params } = request;
     const merged = this.mergeParams(model, params);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 55000);
+    const attempt = streamSignal ? null : this.createAttemptAbort(request.signal, 30000);
+    const signal = streamSignal ?? attempt!.signal;
     try {
       const gatewayId = process.env.CLOUDFLARE_AI_GATEWAY_ID?.trim();
       return await fetch(`${this.endpoint}/${encodeURIComponent(accountId)}/ai/v1/chat/completions`, {
@@ -99,7 +105,7 @@ export class CloudflareAdapter extends BaseProviderAdapter {
           max_tokens: merged.maxOutputTokens,
           stream,
         }),
-        signal: controller.signal,
+        signal,
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -107,7 +113,7 @@ export class CloudflareAdapter extends BaseProviderAdapter {
       }
       throw createUserFriendlyError(error, 'cloudflare', model.id);
     } finally {
-      clearTimeout(timeout);
+      attempt?.cleanup();
     }
   }
 

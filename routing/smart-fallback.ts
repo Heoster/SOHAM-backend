@@ -8,15 +8,24 @@ import { getModelRegistry } from './model-registry';
 import { AIServiceError, type ModelConfig, type ModelCategory, type ProviderType } from './model-config';
 import { getAdapter } from '../adapters';
 import type { GenerateRequest, GenerateResponse } from '../adapters/types';
-import { applyTokenBudget } from './token-budget';
+import {
+  applyTokenBudget,
+  computeTokenBudget,
+  recordModelTokenUsage,
+  syncModelTpmFromError,
+  resetTokenBudgetTracking,
+} from './token-budget';
 
-// ── Circuit breaker ───────────────────────────────────────────────────────────
+// ── Circuit breaker & cooldowns ───────────────────────────────────────────────
 // Tracks consecutive failures per model. After CIRCUIT_THRESHOLD failures
 // within CIRCUIT_WINDOW_MS, the model is skipped for CIRCUIT_COOLDOWN_MS.
 
 const CIRCUIT_THRESHOLD  = 3;
 const CIRCUIT_WINDOW_MS  = 5 * 60_000;   // 5 minutes
 const CIRCUIT_COOLDOWN_MS = 2 * 60_000;  // 2 minutes cooldown
+const MODEL_RATE_LIMIT_DEFAULT_MS = 20_000;
+const MODEL_UNAVAILABLE_COOLDOWN_MS = 5 * 60_000;
+const MODEL_STALL_COOLDOWN_MS = 120_000;
 
 interface CircuitState {
   failures: number[];   // timestamps of recent failures
@@ -24,21 +33,19 @@ interface CircuitState {
 }
 
 const circuitBreakers = new Map<string, CircuitState>();
+const modelCooldowns = new Map<string, number>();
 const providerCooldowns = new Map<ProviderType, number>();
-const PROVIDER_COOLDOWN_MS = 30_000;        // transient network blips
-const PROVIDER_STALL_COOLDOWN_MS = 120_000; // first-token stalls / empty streams:
-                                            // same failure pool as the circuit breaker's 2-min cooldown
+const providerStallModels = new Map<ProviderType, Map<string, number>>();
+const PROVIDER_COOLDOWN_MS = 30_000;        // transport-level outages (ECONNREFUSED/DNS/etc.)
+const PROVIDER_STALL_COOLDOWN_MS = 120_000; // set only after 2+ distinct models stall
 
 // ── Per-attempt stream watchdog ───────────────────────────────────────────────
 // A provider can accept a streaming request, hold the connection open and never
-// deliver a token. OpenRouter's free router did exactly this in production and
-// consumed the whole 55s request budget, producing the misleading client error
-// "Request timeout - exceeded maximum processing time". Cap (a) the wait for the
-// first token and (b) the gap between subsequent tokens; a watchdog expiry is a
-// normal provider failure, so smart-fallback can move on (or report honestly
-// that all providers failed) instead of stalling the request.
-const FIRST_TOKEN_WATCHDOG_MS = 20_000;
-const TOKEN_GAP_WATCHDOG_MS   = 30_000;
+// deliver a token. Cap (a) the wait for the first token and (b) the gap between
+// subsequent tokens. On expiry, abort the attempt's AbortController first so the
+// underlying fetch/reader cancels immediately instead of blocking generator.return().
+const FIRST_TOKEN_WATCHDOG_MS = 15_000;
+const TOKEN_GAP_WATCHDOG_MS   = 25_000;
 
 class StreamWatchdogError extends Error {
   constructor(afterTokens: number, timeoutMs: number) {
@@ -52,6 +59,7 @@ class StreamWatchdogError extends Error {
 async function nextStreamEvent(
   subGen: AsyncGenerator<string, void, unknown>,
   streamedTokens: number,
+  attemptController: AbortController,
 ): Promise<IteratorResult<string, void>> {
   const timeoutMs = streamedTokens === 0 ? FIRST_TOKEN_WATCHDOG_MS : TOKEN_GAP_WATCHDOG_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -64,9 +72,12 @@ async function nextStreamEvent(
     ]);
   } catch (err) {
     if (err instanceof StreamWatchdogError) {
-      // Unwind the abandoned generator so its finally blocks run. The underlying
-      // socket is not forcibly aborted — it is discarded when the provider ends it.
-      await subGen.return(undefined).catch(() => {});
+      // Abort the in-flight HTTP/stream read first so subGen unblocks immediately.
+      attemptController.abort();
+      await Promise.race([
+        subGen.return(undefined).catch(() => {}),
+        sleep(250),
+      ]);
     }
     throw err;
   } finally {
@@ -82,6 +93,15 @@ function isCircuitOpen(modelId: string): boolean {
   state.openUntil = 0;
   state.failures = [];
   return false;
+}
+
+function isModelCoolingDown(modelId: string): boolean {
+  const until = modelCooldowns.get(modelId) ?? 0;
+  if (Date.now() >= until) {
+    modelCooldowns.delete(modelId);
+    return false;
+  }
+  return true;
 }
 
 function recordFailure(modelId: string): void {
@@ -103,6 +123,7 @@ function recordFailure(modelId: string): void {
 function recordSuccess(modelId: string): void {
   const state = circuitBreakers.get(modelId);
   if (state) { state.failures = []; state.openUntil = 0; }
+  modelCooldowns.delete(modelId);
 }
 
 function isProviderCoolingDown(provider: ProviderType): boolean {
@@ -114,23 +135,88 @@ function isProviderCoolingDown(provider: ProviderType): boolean {
   return true;
 }
 
-function recordProviderFailure(provider: ProviderType, error: unknown): void {
+export function parseRateLimitDetails(diagnostic: string): {
+  retryAfterMs: number;
+  tpmLimit?: number;
+  usedTokens?: number;
+} {
+  let retryAfterMs = MODEL_RATE_LIMIT_DEFAULT_MS;
+  const retryMatch = diagnostic.match(/try again in\s+(\d+(?:\.\d+)?)\s*(ms|s|m)/i);
+  if (retryMatch) {
+    const val = Number(retryMatch[1]);
+    const unit = retryMatch[2].toLowerCase();
+    const rawMs = unit === 'ms' ? val : unit === 'm' ? val * 60_000 : val * 1000;
+    if (Number.isFinite(rawMs) && rawMs > 0) {
+      retryAfterMs = Math.min(60_000, Math.max(5_000, Math.ceil(rawMs) + 500));
+    }
+  }
+  const tpmMatch = diagnostic.match(/Limit\s+(\d+)\s*,\s*Used\s+(\d+)/i);
+  const tpmLimit = tpmMatch ? Number(tpmMatch[1]) : undefined;
+  const usedTokens = tpmMatch ? Number(tpmMatch[2]) : undefined;
+  return { retryAfterMs, tpmLimit, usedTokens };
+}
+
+function recordFailureOutcome(model: ModelConfig, error: unknown): void {
+  const now = Date.now();
+  const provider = model.provider;
+  const diagnostic = error && typeof error === 'object' && 'diagnostic' in error
+    ? String((error as { diagnostic: unknown }).diagnostic)
+    : (error instanceof Error ? error.message : String(error));
+
   if (!(error instanceof AIServiceError)) {
-    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-    if (/stalled|empty stream|empty completion/.test(message)) {
-      providerCooldowns.set(provider, Date.now() + PROVIDER_STALL_COOLDOWN_MS);
-    } else if (/fetch failed|network|timeout|econn|etimedout/.test(message)) {
-      providerCooldowns.set(provider, Date.now() + PROVIDER_COOLDOWN_MS);
+    const lower = diagnostic.toLowerCase();
+    if (/stalled|empty stream|empty completion/.test(lower)) {
+      // Cool down ONLY the stalling model first; only cool down the entire
+      // provider if 2+ distinct models from that provider stall recently.
+      modelCooldowns.set(model.id, now + MODEL_STALL_COOLDOWN_MS);
+      let stalled = providerStallModels.get(provider);
+      if (!stalled) {
+        stalled = new Map<string, number>();
+        providerStallModels.set(provider, stalled);
+      }
+      for (const [mid, ts] of stalled.entries()) {
+        if (now - ts > CIRCUIT_WINDOW_MS) stalled.delete(mid);
+      }
+      stalled.set(model.id, now);
+      if (stalled.size >= 2) {
+        providerCooldowns.set(provider, now + PROVIDER_STALL_COOLDOWN_MS);
+      }
+    } else if (/econnrefused|enotfound|fetch failed/.test(lower)) {
+      providerCooldowns.set(provider, now + PROVIDER_COOLDOWN_MS);
+    } else if (/timeout|etimedout/.test(lower)) {
+      modelCooldowns.set(model.id, now + MODEL_STALL_COOLDOWN_MS);
     }
     return;
   }
+
   if (error.code === 'AUTH_ERROR') {
-    // Bad credentials affect every model for this provider. Re-check during the
-    // registry's periodic refresh rather than sending a request per model.
+    // Bad credentials affect every model for this provider.
     getModelRegistry().markProviderUnavailable(provider);
-  } else if (error.code === 'RATE_LIMIT' || error.code === 'NETWORK_ERROR') {
-    providerCooldowns.set(provider, Date.now() + PROVIDER_COOLDOWN_MS);
+  } else if (error.code === 'RATE_LIMIT') {
+    // Rate limits (TPM/RPM) on Groq/Google are per-model; NEVER poison the
+    // entire provider so Qwen / 120B / Flash-Lite remain immediately available.
+    const { retryAfterMs, tpmLimit, usedTokens } = parseRateLimitDetails(diagnostic);
+    modelCooldowns.set(model.id, now + retryAfterMs);
+    syncModelTpmFromError(model.id, usedTokens ?? tpmLimit ?? 8_000, tpmLimit, now);
+  } else if (error.code === 'MODEL_UNAVAILABLE') {
+    modelCooldowns.set(model.id, now + MODEL_UNAVAILABLE_COOLDOWN_MS);
+  } else if (error.code === 'NETWORK_ERROR') {
+    const lower = diagnostic.toLowerCase();
+    if (/econnrefused|enotfound|fetch failed/.test(lower)) {
+      providerCooldowns.set(provider, now + PROVIDER_COOLDOWN_MS);
+    } else {
+      modelCooldowns.set(model.id, now + PROVIDER_COOLDOWN_MS);
+    }
   }
+}
+
+/** Reset circuit breakers, cooldowns, and token-budget window (for tests). */
+export function resetFallbackState(): void {
+  circuitBreakers.clear();
+  modelCooldowns.clear();
+  providerCooldowns.clear();
+  providerStallModels.clear();
+  resetTokenBudgetTracking();
 }
 
 
@@ -260,10 +346,10 @@ function getFallbackModels(category: ModelCategory): ModelConfig[] {
 function validateContextWindow(
   prompt: string,
   history: any[],
-  model: ModelConfig
+  model: ModelConfig,
+  systemPrompt = '',
 ): boolean {
-  // Rough token estimation (4 chars ≈ 1 token)
-  const promptTokens = Math.ceil(prompt.length / 4);
+  const promptTokens = Math.ceil((prompt.length + systemPrompt.length) / 3.5);
   
   const historyTokens = history.reduce((sum, msg) => {
     let content = '';
@@ -272,11 +358,11 @@ function validateContextWindow(
     } else if (Array.isArray(msg.content)) {
       content = msg.content.map((c: any) => c.text || '').join('');
     }
-    return sum + Math.ceil(content.length / 4);
+    return sum + Math.ceil(content.length / 3.5);
   }, 0);
   
   const totalTokens = promptTokens + historyTokens;
-  const maxTokens = model.contextWindow * 0.8; // Use 80% of limit for safety
+  const maxTokens = model.contextWindow * 0.9; // Use 90% of limit for safety
   
   if (totalTokens > maxTokens) {
     console.warn(
@@ -299,7 +385,7 @@ async function tryGenerateWithModel(
   const adapter = getAdapter(model.provider);
   
   // Validate context window before attempting
-  if (!validateContextWindow(request.prompt, request.history || [], model)) {
+  if (!validateContextWindow(request.prompt, request.history || [], model, request.systemPrompt ?? '')) {
     throw new Error(
       `Context exceeds model's capacity. Please start a new conversation or reduce message history.`
     );
@@ -381,10 +467,15 @@ export async function generateWithSmartFallback(
   }
 
   // ── Token-budget reordering ───────────────────────────────────────────────
-  // Re-sort modelsToTry cheapest-capable-first and drop models whose context
-  // window is too small. Applied whenever no explicit single model was forced
-  // (preferredModelId with no chain = auto; a chain was already budget-sorted
-  // by chat-stream, but other callers — chat-impl, flows — have no chain).
+  // Re-sort modelsToTry cheapest-capable-first based on detected token count
+  // (systemPrompt + prompt + history + maxOutputTokens) and live per-model TPM
+  // headroom. Applied whenever no explicit single model was forced.
+  const requestBudget = computeTokenBudget(
+    request.prompt,
+    request.history ?? [],
+    request.params?.maxOutputTokens ?? 2048,
+    request.systemPrompt ?? '',
+  );
   const hasForcedSingleModel = !request.modelChain?.length && Boolean(request.preferredModelId);
   if (!hasForcedSingleModel) {
     const rawIds = modelsToTry.map(m => m.id);
@@ -393,6 +484,7 @@ export async function generateWithSmartFallback(
       request.history ?? [],
       rawIds,
       request.params?.maxOutputTokens ?? 2048,
+      request.systemPrompt ?? '',
     );
     // Rebuild modelsToTry in the new order (applyTokenBudget already filtered)
     const idSet = new Map(modelsToTry.map(m => [m.id, m]));
@@ -404,8 +496,9 @@ export async function generateWithSmartFallback(
 
   for (let i = 0; i < maxModelsToTry; i++) {
     const model = modelsToTry[i];
+    const remainingMs = MAX_TOTAL_TIME - (Date.now() - startTime);
 
-    if (Date.now() - startTime > MAX_TOTAL_TIME) {
+    if (remainingMs <= 0) {
       const detail = attempts.length ? ` — attempted ${attempts.slice(0, 3).map(a => a.modelId).join(', ')}` : '';
       throw new Error(`Request timeout - exceeded maximum processing time${detail}`);
     }
@@ -416,23 +509,31 @@ export async function generateWithSmartFallback(
       continue;
     }
 
-    // Skip models whose circuit breaker is open
-    if (isCircuitOpen(model.id)) {
-      console.log(`[Fallback] Skipping ${model.id} — circuit open`);
+    // Skip models on per-model cooldown (e.g. 429 TPM recovery or recent stall) or open circuit.
+    if (isModelCoolingDown(model.id) || isCircuitOpen(model.id)) {
+      console.log(`[Fallback] Skipping ${model.id} — model cooling down or circuit open`);
       continue;
     }
 
+    const attemptController = new AbortController();
+    const attemptCapMs = Math.min(25_000, Math.max(3_000, remainingMs));
+    const attemptTimer = setTimeout(() => attemptController.abort(), attemptCapMs);
+
     try {
       console.log(`Attempting generation with ${model.name} (${model.id})...`);
-      const response = await tryGenerateWithModel(model, request);
+      const response = await tryGenerateWithModel(model, { ...request, signal: attemptController.signal });
       recordSuccess(model.id);
+      const usedTokens = response.usage
+        ? (response.usage.promptTokens + response.usage.completionTokens)
+        : (requestBudget.inputTokens + Math.ceil(response.text.length / 3.5));
+      recordModelTokenUsage(model.id, usedTokens);
       return { response, modelUsed: model.id, attempts, fallbackTriggered: i > 0 };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       attempts.push({ modelId: model.id, error: errorMessage, timestamp: Date.now() });
       console.error(`Failed to generate with ${model.name}:`, errorMessage);
       recordFailure(model.id);
-      recordProviderFailure(model.provider, error);
+      recordFailureOutcome(model, error);
 
       if (isCriticalFailure(error) && i < maxModelsToTry - 1) {
         fallbackTriggered = true;
@@ -442,6 +543,8 @@ export async function generateWithSmartFallback(
         throw new Error(`All models failed. Last error: ${errorMessage}. Attempted: ${attempts.map(a => a.modelId).join(', ')}`);
       }
       fallbackTriggered = true;
+    } finally {
+      clearTimeout(attemptTimer);
     }
   }
 
@@ -489,6 +592,12 @@ export async function* streamWithSmartFallback(
   }
 
   // ── Token-budget reordering (same logic as generateWithSmartFallback) ────
+  const requestBudget = computeTokenBudget(
+    request.prompt,
+    request.history ?? [],
+    request.params?.maxOutputTokens ?? 2048,
+    request.systemPrompt ?? '',
+  );
   const hasForcedSingleModelStream = !request.modelChain?.length && Boolean(request.preferredModelId);
   if (!hasForcedSingleModelStream) {
     const rawIds = modelsToTry.map(m => m.id);
@@ -497,6 +606,7 @@ export async function* streamWithSmartFallback(
       request.history ?? [],
       rawIds,
       request.params?.maxOutputTokens ?? 2048,
+      request.systemPrompt ?? '',
     );
     const idSet = new Map(modelsToTry.map(m => [m.id, m]));
     const reordered = budgetIds.map(id => idSet.get(id)).filter(Boolean) as ModelConfig[];
@@ -508,13 +618,14 @@ export async function* streamWithSmartFallback(
 
   for (let i = 0; i < maxModelsToTry; i++) {
     const model = modelsToTry[i];
+    const remainingMs = MAX_TOTAL_TIME - (Date.now() - startTime);
 
-    if (Date.now() - startTime > MAX_TOTAL_TIME) {
+    if (remainingMs <= 0) {
       const detail = failures.length ? ` — attempted ${failures.slice(0, 3).join(' | ')}` : '';
       throw new Error(`Request timeout - exceeded maximum processing time${detail}`);
     }
 
-    if (!validateContextWindow(request.prompt, request.history || [], model)) {
+    if (!validateContextWindow(request.prompt, request.history || [], model, request.systemPrompt ?? '')) {
       continue;
     }
 
@@ -524,45 +635,56 @@ export async function* streamWithSmartFallback(
       continue;
     }
 
-    // Skip models whose circuit breaker is open
-    if (isCircuitOpen(model.id)) {
-      console.log(`[Stream] Skipping ${model.id} — circuit open`);
+    // Skip models on per-model cooldown (429 TPM / stall) or open circuit
+    if (isModelCoolingDown(model.id) || isCircuitOpen(model.id)) {
+      console.log(`[Stream] Skipping ${model.id} — model cooling down or circuit open`);
       continue;
     }
 
     const adapter = getAdapter(model.provider);
+    const attemptController = new AbortController();
     let streamedTokens = 0;
+    let streamedChars = 0;
 
     try {
       console.log(`[Stream] Attempting ${model.name} (${model.id})...`);
       onModelSelected?.(model.id);
 
       if (request.groqBuiltinTools?.length || request.enableLocalToolCalling) {
-        const response = await adapter.generate({ ...request, model });
+        const response = await adapter.generate({ ...request, model, signal: attemptController.signal });
         if (!response.text?.trim()) throw new Error(`${model.provider} returned an empty completion`);
         streamedTokens++;
+        streamedChars += response.text.length;
         yield response.text;
         recordSuccess(model.id);
+        const usedTokens = response.usage
+          ? (response.usage.promptTokens + response.usage.completionTokens)
+          : (requestBudget.inputTokens + Math.ceil(streamedChars / 3.5));
+        recordModelTokenUsage(model.id, usedTokens);
         return { modelUsed: model.id, fallbackTriggered: i > 0, toolsUsed: response.toolsUsed };
       } else if (adapter.generateStream) {
-        const subGen = adapter.generateStream({ ...request, model });
-        let next = await nextStreamEvent(subGen, 0);
+        const subGen = adapter.generateStream({ ...request, model, signal: attemptController.signal });
+        let next = await nextStreamEvent(subGen, 0, attemptController);
         while (!next.done) {
           streamedTokens++;
+          streamedChars += next.value.length;
           yield next.value;
-          next = await nextStreamEvent(subGen, streamedTokens);
+          next = await nextStreamEvent(subGen, streamedTokens, attemptController);
         }
       } else {
-        const response = await adapter.generate({ ...request, model });
+        const response = await adapter.generate({ ...request, model, signal: attemptController.signal });
         if (!response.text?.trim()) throw new Error(`${model.provider} returned an empty completion`);
         streamedTokens++;
+        streamedChars += response.text.length;
         yield response.text;
       }
       if (streamedTokens === 0) throw new Error(`${model.provider} returned an empty stream`);
 
       recordSuccess(model.id);
+      recordModelTokenUsage(model.id, requestBudget.inputTokens + Math.ceil(streamedChars / 3.5));
       return { modelUsed: model.id, fallbackTriggered: i > 0 };
     } catch (error) {
+      attemptController.abort();
       const errorMessage = error instanceof Error ? error.message : String(error);
       const diagnostic = error && typeof error === 'object' && 'diagnostic' in error
         ? String((error as { diagnostic: unknown }).diagnostic)
@@ -570,7 +692,7 @@ export async function* streamWithSmartFallback(
       console.error(`[Stream] Failed with ${model.name} (${model.provider}/${model.modelId}):`, diagnostic);
       failures.push(`${model.provider}/${model.modelId}: ${diagnostic}`);
       recordFailure(model.id);
-      recordProviderFailure(model.provider, error);
+      recordFailureOutcome(model, error);
       // Once any token has been sent, switching providers would splice two answers
       // together. Only retry failures that occur before output begins.
       if (streamedTokens > 0) throw new Error(`Stream interrupted by ${model.provider}; retry the request.`);

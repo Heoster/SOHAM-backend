@@ -93,6 +93,18 @@ const jinaStyle = parseYouTubeSearchMarkdown('1. [Test Song Official Video](<htt
 assert.equal(jinaStyle.length, 2);
 assert.equal(jinaStyle[0].videoId, 'abcDEFghi12');
 
+// Thumbnail/duration link before real title link must NOT stick as "YouTube video <id>"
+const THUMB_FIRST_MARKDOWN = `
+[![](https://i.ytimg.com/vi/2FhgKp_lfJQ/hq720.jpg)](https://www.youtube.com/watch?v=2FhgKp_lfJQ)
+[3:42](https://www.youtube.com/watch?v=2FhgKp_lfJQ)
+[Afsoos - Anuv Jain (Official Audio)](https://www.youtube.com/watch?v=2FhgKp_lfJQ)
+[Anuv Jain](https://www.youtube.com/@AnuvJain)
+`;
+const thumbParsed = parseYouTubeSearchMarkdown(THUMB_FIRST_MARKDOWN);
+assert.equal(thumbParsed.length, 1);
+assert.equal(thumbParsed[0].title, 'Afsoos - Anuv Jain (Official Audio)');
+assert.equal(thumbParsed[0].channel, 'Anuv Jain');
+
 // ─── 5) End-to-end with mocked fetch: Jina primary ─────────────────────────
 const originalFetch = globalThis.fetch;
 const originalEnv = { JINA_API_KEY: process.env.JINA_API_KEY, FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY };
@@ -180,6 +192,32 @@ void (async () => {
       assert.equal(tool?.ok, true);
       assert.ok(tool?.embedUrl?.includes('/embed/'));
       assert.ok(tool?.openUrl?.includes('watch?v='));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  // 5f) Thumbnail-only markdown (no title text) enriches real title via oEmbed
+  {
+    const thumbOnlyMd = '[![](https://i.ytimg.com/vi/JgDNFQ2RaLQ/hq720.jpg)](https://www.youtube.com/watch?v=JgDNFQ2RaLQ)';
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith('https://r.jina.ai/')) {
+        return new Response(thumbOnlyMd, { status: 200 });
+      }
+      if (url.startsWith('https://www.youtube.com/oembed')) {
+        return new Response(
+          JSON.stringify({ title: 'Ed Sheeran - Shape of You (Official Music Video)', author_name: 'Ed Sheeran' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      throw new Error(`unexpected fetch in oembed test: ${url}`);
+    }) as typeof fetch;
+    try {
+      const res = await playYouTubeVideo('shape of you unit oembed');
+      assert.ok(res.ok);
+      assert.equal(res.title, 'Ed Sheeran - Shape of You (Official Music Video)');
+      assert.equal(res.channel, 'Ed Sheeran');
     } finally {
       globalThis.fetch = originalFetch;
     }

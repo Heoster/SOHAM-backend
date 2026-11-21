@@ -164,6 +164,14 @@ async function main() {
   assert.equal(detectToolIntent('here is the link: https://example.com/x please take a look')?.tool, 'web_read');
   assert.equal(detectToolIntent('play https://www.youtube.com/watch?v=abc123')?.tool, 'play_video', 'play intent keeps the URL path');
   assert.equal(detectToolIntent('tell me a joke')?.tool, 'joke');
+  // Normal questions / coding prompts must NOT trigger web_search unnecessarily
+  assert.equal(detectToolIntent('what is a closure in javascript?'), null);
+  assert.equal(detectToolIntent('who was Alan Turing?'), null);
+  assert.equal(detectToolIntent('help me fix my current React hook'), null);
+  assert.equal(detectToolIntent('write a sorting algorithm today'), null);
+  // Real live/search queries still trigger web_search
+  assert.equal(detectToolIntent('who is the current vice president of India')?.tool, 'web_search');
+  assert.equal(detectToolIntent('search for rust async traits')?.tool, 'web_search');
   console.log('regex fallback ok — explicit URLs route to web_read (rollback path covered)');
 
   // ── 5c) collectResearchSources: dedupe, http(s)-only, tool tag, cap ─────────

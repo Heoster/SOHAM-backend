@@ -43,7 +43,7 @@ export interface CapabilityEntry {
 }
 
 export const CAPABILITY_MANIFEST: CapabilityEntry[] = [
-  { name: 'web_search',     does: 'Search the live web (Tavily/Wikipedia/DDG) and READ the top 3 pages in full', when: 'current events, prices, facts, prices of things, anything that changes or that you are not sure about' },
+  { name: 'web_search',     does: 'Search the live web (Tavily/Wikipedia/DDG) and READ the top 3 pages in full', when: 'ONLY when live, recent/post-cutoff, or current real-world info is strictly needed (e.g. current officeholders, recent releases, live events, explicit "search the web"). NEVER for general knowledge, coding, math, concepts, explanations, opinions, or creative writing.' },
   { name: 'web_read',       does: 'Read one specific page URL in full', when: 'the user pastes/links a URL or asks about a specific page' },
   { name: 'wikipedia',      does: 'Look up an encyclopedic article (title + extract)', when: 'definitions, history, biographies, well-known facts — quick verified background' },
   { name: 'news_search',    does: 'Latest news on a topic', when: 'breaking news, "latest", "what happened", headlines' },
@@ -189,7 +189,8 @@ Return JSON ONLY — no prose:
 {"tools":[{"tool":"<name>","args":{"query":"<exact query or the user's phrasing>"},"why":"<short reason>"}],"memory_extract":true|false}
 
 Rules:
-- Empty tools [] is CORRECT for greetings, chit-chat, opinions, jokes-without-request, and anything you know confidently.
+- Empty tools [] is CORRECT and PREFERRED for greetings, chit-chat, opinions, general knowledge, coding/debugging, math, explanations, creative writing, advice, jokes-without-request, and anything you know confidently.
+- NEVER call web_search unless live/recent/external web data is genuinely required to answer accurately (or the user explicitly asks to search).
 - Use the FEWEST tools that fully answer. Max ${MAX_TOOLS_PER_PLAN}.
 - web_search already READS the top 3 pages — do not add web_read for the same topic. web_read is ONLY for explicit URLs/pages the user wants opened.
 - Wikipedia is for quick encyclopedic background; pair it with web_search when freshness matters.

@@ -75,38 +75,35 @@ export class GoogleAdapter extends BaseProviderAdapter {
 
     const contents = this.buildContents(prompt, systemPrompt, history);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 55000);
-
+    const attempt = this.createAttemptAbort(request.signal, 55000);
     const apiUrl = `${GOOGLE_API_URL}/${model.modelId}:streamGenerateContent?alt=sse&key=${apiKey}`;
-
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: mergedParams.temperature,
-          topP: mergedParams.topP,
-          topK: mergedParams.topK,
-          maxOutputTokens: mergedParams.maxOutputTokens,
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok || !response.body) {
-      const errorText = await response.text().catch(() => '');
-      throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'google', model.id);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
     try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          generationConfig: {
+            temperature: mergedParams.temperature,
+            topP: mergedParams.topP,
+            topK: mergedParams.topK,
+            maxOutputTokens: mergedParams.maxOutputTokens,
+          },
+        }),
+        signal: attempt.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        const errorText = await response.text().catch(() => '');
+        throw createUserFriendlyError(new Error(`API error: ${response.status} - ${errorText}`), 'google', model.id);
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -133,7 +130,11 @@ export class GoogleAdapter extends BaseProviderAdapter {
         }
       }
     } finally {
-      reader.releaseLock();
+      attempt.cleanup();
+      if (reader) {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
     }
   }
 
@@ -187,19 +188,20 @@ export class GoogleAdapter extends BaseProviderAdapter {
       console.log(`Calling Google Gemini API for ${model.id}`);
       
       // Create AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // Provider call timeout
-      
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-      
-      clearTimeout(timeoutId);
+      const attempt = this.createAttemptAbort(request.signal, 30000);
+      let response: Response;
+      try {
+        response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: attempt.signal,
+        });
+      } finally {
+        attempt.cleanup();
+      }
       
       if (!response.ok) {
         const errorText = await response.text();

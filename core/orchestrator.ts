@@ -158,7 +158,10 @@ export async function buildSohamPromptContext(input: {
   const profileService   = getUserProfileService();
   const knowledgeService = getUpstashKnowledgeService();
 
-  // Analyse query type for smarter realtime fetching
+  // Analyse query type for smarter realtime fetching.
+  // Respect the agent planner: if a plan already ran and did NOT pick a live
+  // search tool (or already picked web_search/news_search, which runs below),
+  // do NOT trigger a redundant background web search in getRealtimeContext.
   const queryAnalysis = analyzeQuery(userMessage);
   const realtimeQueryType = queryAnalysis.queryType === 'news'    ? 'news'
     : queryAnalysis.queryType === 'weather'  ? 'weather'
@@ -167,9 +170,12 @@ export async function buildSohamPromptContext(input: {
     : queryAnalysis.isTimeSensitive          ? 'web'
     : 'general';
 
-  const needsRealtime = queryAnalysis.isTimeSensitive
+  const plannerHandledSearch = input.agentPlan !== undefined && input.agentPlan !== null;
+  const needsRealtime = !plannerHandledSearch && (
+    queryAnalysis.isTimeSensitive
     || queryAnalysis.queryType === 'news'
-    || queryAnalysis.queryType === 'realtime';
+    || queryAnalysis.queryType === 'realtime'
+  );
 
   // ── Parallel fetch all layers — allSettled so one failure doesn't kill all ─
   const [
