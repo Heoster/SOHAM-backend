@@ -48,3 +48,7 @@ jobs:
 
       - name: Run Pinecone and RAG checks (mocked)
         run: npm run test:pinecone
+
+      # Render may omit devDependencies; postinstall must still compile.
+      - name: Verify production-only install and build
+        run: npm ci --omit=dev && npm run typecheck && npm run build
