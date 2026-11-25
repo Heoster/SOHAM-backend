@@ -636,6 +636,9 @@ function buildResult(
   candidates: YouTubeVideoCandidate[],
   t0: number,
 ): YouTubePlayResult {
+  // If oEmbed failed for a thumbnail-only hit, prefer the first titled search
+  // candidate rather than presenting an opaque ID as the primary result.
+  candidates = [...candidates].sort((a, b) => Number(isNoiseOrPlaceholderTitle(a.title, a.videoId)) - Number(isNoiseOrPlaceholderTitle(b.title, b.videoId)));
   const first = candidates[0];
   return {
     ok: true,

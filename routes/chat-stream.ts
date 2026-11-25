@@ -1,3 +1,4 @@
+import { historyContent } from '../utils/followup-context';
 /**
  * POST /api/chat/stream
  * ─────────────────────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
   try {
     const convertedHistory = history.map((msg: any) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
-      content: msg.content,
+      content: historyContent(msg),
     }));
     // Frontend appends a SOHAM_CLOCK block to `message`; strip it for intent
     // routing and memory. The model prompt keeps it (it needs the time).

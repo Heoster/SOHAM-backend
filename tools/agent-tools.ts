@@ -1,3 +1,5 @@
+import { weatherSearch, sportsSearch } from './live-data';
+import { resolveDataFollowup } from '../utils/followup-context';
 import { formatResultsForAI, searchDuckDuckGo } from './duckduckgo';
 import { extractPlayQuery, resolveReferencedQuery, type ConversationTurnLike } from './youtube-play';
 export type { ConversationTurnLike };
@@ -133,7 +135,7 @@ export function detectToolIntent(message: string): ToolIntent | null {
 
   // ── Weather — including typos ─────────────────────────────────────────────
   if (/\b(weather|temperature|forecast|rain|humidity|mausam|baarish|tapman|garmi|thand|wether|wheather|forcast|temprature)\b/i.test(lower)) {
-    return { tool: 'weather_search', query: sanitizeQuery(normalized) };
+    return { tool: 'weather_search', query: normalized.trim().slice(0, 300) };
   }
 
   // ── Sports ────────────────────────────────────────────────────────────────
@@ -245,47 +247,6 @@ async function fetchJson<T>(url: string, timeoutMs = 5000): Promise<T> {
   }
 }
 
-function parseLocation(query: string): string {
-  const inMatch = query.match(/\bin\s+([a-zA-Z\s,.-]+)$/i);
-  return sanitizeQuery(inMatch?.[1] || query) || 'New York';
-}
-
-async function weatherSearch(query: string): Promise<SohamToolResult> {
-  const location = parseLocation(query);
-  try {
-    const geo = await fetchJson<{ results?: Array<{ latitude: number; longitude: number; name: string; country?: string }> }>(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`
-    );
-    const place = geo.results?.[0];
-    if (!place) {
-      return { tool: 'weather_search', query, ok: false, output: `No weather location found for "${location}".` };
-    }
-
-    const weather = await fetchJson<{
-      current?: { temperature_2m?: number; wind_speed_10m?: number; weather_code?: number; time?: string };
-    }>(
-      `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`
-    );
-
-    const current = weather.current;
-    if (!current) {
-      return { tool: 'weather_search', query, ok: false, output: `Weather data is unavailable for ${place.name}.` };
-    }
-
-    return {
-      tool: 'weather_search',
-      query,
-      ok: true,
-      output:
-        `Current weather for ${place.name}${place.country ? `, ${place.country}` : ''}: ` +
-        `${current.temperature_2m ?? 'N/A'}°C, wind ${current.wind_speed_10m ?? 'N/A'} km/h, ` +
-        `code ${current.weather_code ?? 'N/A'} (time: ${current.time ?? 'N/A'}).`,
-    };
-  } catch (error) {
-    return { tool: 'weather_search', query, ok: false, output: `Weather lookup failed: ${String(error)}` };
-  }
-}
-
 async function newsSearch(query: string): Promise<SohamToolResult> {
   const safeQuery = sanitizeQuery(query) || 'latest news';
   try {
@@ -309,41 +270,6 @@ async function newsSearch(query: string): Promise<SohamToolResult> {
     return { tool: 'news_search', query: safeQuery, ok: false, output: `News search failed: ${String(error)}` };
   }
 }
-async function sportsSearch(query: string): Promise<SohamToolResult> {
-  const safeQuery = sanitizeQuery(query) || 'live cricket matches';
-  const cricApiKey = process.env.CRICAPI_KEY;
-
-  try {
-    if (cricApiKey) {
-      const data = await fetchJson<{ data?: Array<{ name?: string; status?: string; venue?: string; dateTimeGMT?: string }> }>(
-        `https://api.cricapi.com/v1/currentMatches?apikey=${encodeURIComponent(cricApiKey)}&offset=0`
-      );
-      const matches = (data.data || []).slice(0, 8);
-      if (matches.length === 0) {
-        return { tool: 'sports_search', query: safeQuery, ok: true, output: 'No live cricket matches returned by CricAPI.' };
-      }
-      const lines = matches.map((m, i) => `${i + 1}. ${m.name || 'Match'} - ${m.status || 'Status unavailable'} (${m.venue || 'Unknown venue'})`);
-      return { tool: 'sports_search', query: safeQuery, ok: true, output: lines.join('\n') };
-    }
-
-    // Free fallback: web search for live cricket updates
-    const duck = await searchDuckDuckGo(`live cricket matches ${safeQuery}`);
-    const top = duck.results.slice(0, 5);
-    if (top.length === 0) {
-      return { tool: 'sports_search', query: safeQuery, ok: false, output: 'No sports results found. Configure CRICAPI_KEY for direct live match feeds.' };
-    }
-    return {
-      tool: 'sports_search',
-      query: safeQuery,
-      ok: true,
-      output: top.map((r, i) => `${i + 1}. ${r.title} - ${r.snippet}`).join('\n'),
-      sources: top.map(r => ({ title: r.title, url: r.url })),
-    };
-  } catch (error) {
-    return { tool: 'sports_search', query: safeQuery, ok: false, output: `Sports lookup failed: ${String(error)}` };
-  }
-}
-
 async function financeSearch(query: string): Promise<SohamToolResult> {
   const safeQuery = sanitizeQuery(query);
   const lower = safeQuery.toLowerCase();
@@ -818,9 +744,10 @@ export async function runToolByName(
   query: string,
   history: ConversationTurnLike[] = [],
 ): Promise<SohamToolResult> {
+  if (['sports_search', 'weather_search', 'web_search'].includes(tool)) query = resolveDataFollowup(query, history);
   switch (tool) {
     case 'news_search':     return newsSearch(sanitizeQuery(query));
-    case 'weather_search':  return weatherSearch(sanitizeQuery(query));
+    case 'weather_search':  return weatherSearch(stripInjectedContext(query).slice(0, 300));
     case 'sports_search':   return sportsSearch(sanitizeQuery(query));
     case 'finance_search':  return financeSearch(sanitizeQuery(query));
     case 'web_search':      return webSearch(query);
@@ -846,7 +773,7 @@ export async function executeSohamTool(
   message: string,
   history: ConversationTurnLike[] = [],
 ): Promise<SohamToolResult | null> {
-  const intent = detectToolIntent(message);
+  const intent = detectToolIntent(resolveDataFollowup(message, history));
   if (!intent) return null;
   return runToolByName(intent.tool, intent.query, history);
 }

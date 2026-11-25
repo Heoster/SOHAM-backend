@@ -231,8 +231,8 @@ async function probeNewsApi(): Promise<void> {
 }
 
 async function probeCricApi(): Promise<void> {
-  const key = process.env.CRICAPI_KEY;
-  if (!key) throw new Error('CRICAPI_KEY not set');
+  const key = process.env.CRICKETDATA_API_KEY || process.env.CRICAPI_KEY;
+  if (!key) throw new Error('CRICKETDATA_API_KEY (or CRICAPI_KEY) not set');
   const url = `https://api.cricapi.com/v1/currentMatches?apikey=${encodeURIComponent(key)}&offset=0`;
   const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -525,9 +525,9 @@ export async function healthHandler(req: Request, res: Response): Promise<void> 
       'NEWS_API_KEY', 'https://newsapi.org'
     ),
     cricapi: envCheck(
-      ['CRICAPI_KEY'], false,
-      'Live cricket scores and match data',
-      'CRICAPI_KEY', 'https://cricapi.com'
+      [process.env.CRICKETDATA_API_KEY ? 'CRICKETDATA_API_KEY' : 'CRICAPI_KEY'], false,
+      'CricketData scores and match data (feed may be delayed)',
+      'CRICKETDATA_API_KEY (or CRICAPI_KEY)', 'https://cricketdata.org'
     ),
     alphaVantage: envCheck(
       ['ALPHA_VANTAGE_API_KEY'], false,

@@ -18,6 +18,7 @@
     "health": "node dist/server.js --health",
     "prod": "NODE_ENV=production node dist/server.js",
     "test:sanitizer": "node -r ts-node/register/transpile-only scripts/test-output-sanitizer.ts",
+    "test:live-data": "node -r ts-node/register/transpile-only scripts/test-live-data.ts",
     "test:pinecone": "node -r ts-node/register/transpile-only scripts/test-pinecone.ts && node -r ts-node/register/transpile-only scripts/test-embeddings.ts && node -r ts-node/register/transpile-only scripts/test-rag.ts",
     "test:token-fallback": "node -r ts-node/register/transpile-only scripts/test-token-fallback.ts"
   },
