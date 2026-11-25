@@ -1,3 +1,4 @@
+import { historyContent } from '../utils/followup-context';
 /**
  * POST /api/chat/personality
  * ──────────────────────────
@@ -45,7 +46,7 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
 
     const convertedHistory = history.map((msg: any) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
-      content: msg.content,
+      content: historyContent(msg),
     }));
 
     const agentContext = await buildSohamPromptContext({ message, history: convertedHistory, userId });

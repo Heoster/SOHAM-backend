@@ -1,3 +1,4 @@
+import { historyContent } from '../utils/followup-context';
 /**
  * Chat Handler — Express implementation
  * POST /api/chat
@@ -53,7 +54,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     // ── Convert history ─────────────────────────────────────────────────────
     const convertedHistory = history.map((msg: any) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
-      content: msg.content,
+      content: historyContent(msg),
     }));
 
     // Frontend appends a SOHAM_CLOCK block; strip it for intent routing and

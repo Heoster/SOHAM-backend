@@ -1,3 +1,4 @@
+import { resolveDataFollowup } from '../utils/followup-context';
 /**
  * SOHAM Agent — model-driven tool planning & multi-step execution
  * ═══════════════════════════════════════════════════════════════════════════
@@ -191,6 +192,8 @@ Return JSON ONLY — no prose:
 Rules:
 - Empty tools [] is CORRECT and PREFERRED for greetings, chit-chat, opinions, general knowledge, coding/debugging, math, explanations, creative writing, advice, jokes-without-request, and anything you know confidently.
 - NEVER call web_search unless live/recent/external web data is genuinely required to answer accurately (or the user explicitly asks to search).
+- Resolve "this match/game" using the most recent explicit user teams and video subject. Never switch year/tournament based on a similarly named old result. For match details/scores use sports_search. If identity remains ambiguous, ask for teams/date/tournament.
+- Tool failures, empty results, and web snippets are not verified live data. Never invent missing scores or weather. Use only sources relevant to the resolved subject; unrelated sources must not support an answer.
 - Use the FEWEST tools that fully answer. Max ${MAX_TOOLS_PER_PLAN}.
 - web_search already READS the top 3 pages — do not add web_read for the same topic. web_read is ONLY for explicit URLs/pages the user wants opened.
 - Wikipedia is for quick encyclopedic background; pair it with web_search when freshness matters.
@@ -228,7 +231,8 @@ export async function planToolCalls(
   history: ConversationTurnLike[] = [],
   deps: PlannerDeps = {},
 ): Promise<AgentPlan | null> {
-  const historyBlock = history.slice(-4)
+  userMessage = resolveDataFollowup(userMessage, history);
+  const historyBlock = history.slice(-8)
     .map(t => `${t.role === 'user' ? 'User' : 'Assistant'}: ${String(t.content).slice(0, 400)}`)
     .join('\n');
 
@@ -340,7 +344,7 @@ export async function runSohamAgent(
     return { results: legacy ? [legacy] : [], plannedBy: 'fallback', plannedTools: legacy ? [legacy.tool] : [], memoryExtract: true };
   }
 
-  const plan = opts.plan !== undefined ? opts.plan : await planToolCalls(userMessage, history, opts.deps);
+  let plan = opts.plan !== undefined ? opts.plan : await planToolCalls(userMessage, history, opts.deps);
 
   if (!plan) {
     // Legacy safety net — the pre-agent behavior, unchanged
@@ -348,11 +352,20 @@ export async function runSohamAgent(
     return { results: legacy ? [legacy] : [], plannedBy: 'fallback', plannedTools: legacy ? [legacy.tool] : [], memoryExtract: true };
   }
 
+  const resolved = resolveDataFollowup(userMessage, history);
+  const isMatchFollowup = resolved !== userMessage && /\b(?:vs|versus)\b/i.test(resolved);
+  if (isMatchFollowup) {
+    // A clearly anchored match follow-up must not silently become no-tool
+    // hallucination or an unrelated planner search.
+    plan = { ...plan, tools: [{ tool: 'sports_search', query: resolved, why: 'Resolve the user’s explicit match reference' }] };
+  }
+
   if (plan.tools.length === 0) {
     return { results: [], plannedBy: 'model', plannedTools: [], memoryExtract: plan.memoryExtract };
   }
 
-  const results = await executeAgentPlan(plan, { history, userId: opts.userId }, { runners: opts.runners });
+  const executionPlan = resolved !== userMessage ? { ...plan, tools: plan.tools.map(step => ['web_search', 'sports_search', 'weather_search'].includes(step.tool) ? { ...step, query: resolved } : step) } : plan;
+  const results = await executeAgentPlan(executionPlan, { history, userId: opts.userId }, { runners: opts.runners });
   return {
     results,
     plannedBy: 'model',
