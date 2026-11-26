@@ -1,3 +1,4 @@
+import { userIdentityMiddleware } from './middleware/user-identity';
 /**
  * SOHAM Backend Server — Production Entry Point
  * ─────────────────────────────────────────────────────────────────────────────
@@ -169,7 +170,7 @@ app.use(cors({
     callback(null, false);
   },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Token', 'X-Request-ID'],
   exposedHeaders: ['X-Request-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
   credentials: true,
 }));
@@ -218,6 +219,8 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
 
 // ── Rate limiting on all /api routes ──────────────────────────────────────────
 app.use('/api', rateLimitMiddleware);
+// Signed user identity is independent of the shared service API key.
+app.use('/api', userIdentityMiddleware());
 
 // ── Root ───────────────────────────────────────────────────────────────────────
 app.get('/', (_req, res) => {

@@ -16,7 +16,11 @@ CREATE TABLE IF NOT EXISTS chat_history (
 CREATE INDEX IF NOT EXISTS chat_history_user_id_idx ON chat_history (user_id, created_at DESC);
 
 ALTER TABLE chat_history ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "service role full access" ON chat_history USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "service role full access" ON chat_history;
+DROP POLICY IF EXISTS "soham deny browser access" ON chat_history;
+CREATE POLICY "soham deny browser access" ON chat_history AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+REVOKE ALL ON TABLE chat_history FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE chat_history TO service_role;
 
 -- ── Long-term: Extracted memories (facts, preferences, skills) ──
 CREATE TABLE IF NOT EXISTS memories (
@@ -40,7 +44,11 @@ CREATE INDEX IF NOT EXISTS memories_last_accessed_idx ON memories (user_id, last
 CREATE INDEX IF NOT EXISTS memories_importance_idx    ON memories (user_id, importance DESC);
 
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "service role full access" ON memories USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "service role full access" ON memories;
+DROP POLICY IF EXISTS "soham deny browser access" ON memories;
+CREATE POLICY "soham deny browser access" ON memories AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+REVOKE ALL ON TABLE memories FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE memories TO service_role;
 
 -- ── Image rate limits (already exists, included for completeness) ──
 CREATE TABLE IF NOT EXISTS image_rate_limits (
@@ -51,7 +59,11 @@ CREATE TABLE IF NOT EXISTS image_rate_limits (
 );
 
 ALTER TABLE image_rate_limits ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "service role full access" ON image_rate_limits USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "service role full access" ON image_rate_limits;
+DROP POLICY IF EXISTS "soham deny browser access" ON image_rate_limits;
+CREATE POLICY "soham deny browser access" ON image_rate_limits AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+REVOKE ALL ON TABLE image_rate_limits FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE image_rate_limits TO service_role;
 
 -- ── User Profiles (structured personal info, preferences, likes/dislikes) ──
 -- Run this once in your Supabase SQL editor to enable the User Profile feature.
@@ -77,7 +89,11 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 CREATE INDEX IF NOT EXISTS user_profiles_user_id_idx ON user_profiles (user_id);
 
 ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "service role full access" ON user_profiles USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "service role full access" ON user_profiles;
+DROP POLICY IF EXISTS "soham deny browser access" ON user_profiles;
+CREATE POLICY "soham deny browser access" ON user_profiles AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+REVOKE ALL ON TABLE user_profiles FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE user_profiles TO service_role;
 
 -- Auto-update updated_at on every row change
 CREATE OR REPLACE FUNCTION update_user_profiles_updated_at()
@@ -94,7 +110,7 @@ CREATE TRIGGER trg_user_profiles_updated_at
   FOR EACH ROW EXECUTE FUNCTION update_user_profiles_updated_at();
 
 -- ── Documents (Document RAG) ──────────────────────────────────────────────────
--- Registry of user-uploaded documents. The chunks themselves live in Upstash
+-- Registry of user-uploaded documents. The chunks themselves live in Pinecone
 -- Vector (namespace "docs"); chunk_ids records them so DELETE can remove both.
 CREATE TABLE IF NOT EXISTS documents (
   id            TEXT PRIMARY KEY,
@@ -113,4 +129,8 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS documents_user_id_idx ON documents (user_id, created_at DESC);
 
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "service role full access" ON documents USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "service role full access" ON documents;
+DROP POLICY IF EXISTS "soham deny browser access" ON documents;
+CREATE POLICY "soham deny browser access" ON documents AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+REVOKE ALL ON TABLE documents FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE documents TO service_role;

@@ -1,5 +1,10 @@
 # News evidence and public-learning safety
 
+**Security update:** public/shared conversational stores are now fully quarantined;
+`SOHAM_PUBLIC_AUTO_LEARN_ENABLED=1` no longer re-enables publishing. Private
+features require signed identity. See [current isolation rollout](USER_DATA_ISOLATION.md).
+The historical opt-in description below is superseded by that containment policy.
+
 ## Reported incident
 
 The search pipeline returned multiple India-related stories, but the answer said

@@ -142,7 +142,7 @@ import { isPineconeReady, vectorRequest as vectorFetch } from './pinecone-vector
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL ?? '';
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? '';
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
   return { url, key, ready: Boolean(url && key) };
 }
 
@@ -201,7 +201,7 @@ export async function listDocuments(userId: string): Promise<DocumentRecord[]> {
   const res = await sbFetch(`documents?user_id=eq.${encodeURIComponent(userId)}&select=*&order=created_at.desc&limit=50`);
   if (!res.ok) throw new Error(`documents list failed: ${res.status}`);
   const rows = await res.json() as any[];
-  return rows.map(rowToRecord);
+  return rows.filter(row => row.user_id === userId).map(rowToRecord);
 }
 
 export async function getDocument(userId: string, docId: string): Promise<DocumentRecord | null> {
@@ -213,7 +213,7 @@ export async function getDocument(userId: string, docId: string): Promise<Docume
   const res = await sbFetch(`documents?id=eq.${encodeURIComponent(docId)}&user_id=eq.${encodeURIComponent(userId)}&select=*`);
   if (!res.ok) throw new Error(`document fetch failed: ${res.status}`);
   const rows = await res.json() as any[];
-  return rows.length ? rowToRecord(rows[0]) : null;
+  return rows.length && rows[0].user_id === userId ? rowToRecord(rows[0]) : null;
 }
 
 async function registryInsert(record: DocumentRecord & { chunkIds: string[] }): Promise<void> {
@@ -264,20 +264,22 @@ async function registryUpdate(id: string, patch: RegistryPatch): Promise<void> {
   if (!res.ok) logger.warn('[Docs] Registry update failed', { id, status: res.status });
 }
 
-async function registryDelete(id: string): Promise<string[]> {
+async function registryDelete(id: string, userId: string): Promise<string[]> {
   const { ready } = getSupabase();
   if (!ready) {
-    const chunkIds = localRegistry.get(id)?.chunkIds ?? [];
+    const own = localRegistry.get(id);
+    if (!own || own.userId !== userId) return [];
+    const chunkIds = own.chunkIds;
     localRegistry.delete(id);
     return chunkIds;
   }
-  const res = await sbFetch(`documents?id=eq.${encodeURIComponent(id)}&select=chunk_ids`, { method: 'GET' });
+  const res = await sbFetch(`documents?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}&select=user_id,chunk_ids`, { method: 'GET' });
   let chunkIds: string[] = [];
   if (res.ok) {
     const rows = await res.json() as any[];
-    chunkIds = Array.isArray(rows?.[0]?.chunk_ids) ? rows[0].chunk_ids : [];
+    chunkIds = rows?.[0]?.user_id === userId && Array.isArray(rows[0]?.chunk_ids) ? rows[0].chunk_ids.filter((chunkId: unknown) => typeof chunkId === 'string' && chunkId.startsWith(`doc:${userId}:${id}:`)) : [];
   }
-  await sbFetch(`documents?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await sbFetch(`documents?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}`, { method: 'DELETE' });
   return chunkIds;
 }
 
@@ -334,7 +336,7 @@ export async function searchDocuments(userId: string | undefined, query: string,
       const id = String(m?.id ?? '');
       const ns = md.namespace as string | undefined;
       const uid = (md.user_id as string | undefined) ?? '';
-      return (ns === 'docs' || id.startsWith('doc:')) && (uid ? uid === userId : id.split(':')[1] === userId);
+      return ns === 'docs' && uid === userId;
     })
     .map((m: any) => ({
       docId: String(m?.metadata?.doc_id ?? String(m.id).split(':')[2] ?? ''),
@@ -430,7 +432,7 @@ export async function ingestDocument(userId: string, input: IngestInput): Promis
 export async function deleteDocument(userId: string, docId: string): Promise<boolean> {
   const existing = await getDocument(userId, docId);
   if (!existing) return false;
-  const chunkIds = await registryDelete(docId);
+  const chunkIds = await registryDelete(docId, userId);
 
   if (chunkIds.length > 0 && isPineconeReady()) {
     try {

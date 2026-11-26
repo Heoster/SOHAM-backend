@@ -106,85 +106,15 @@ import { isPineconeReady, vectorRequest as vectorPost } from './pinecone-vector'
  * Tagged with `expires_at` so stale entries can be filtered out.
  */
 export async function storeRealtimeChunk(result: LiveDataResult): Promise<void> {
-  if (!isPineconeReady() || result.content.trim().length < 20) return;
-
-  const id = `realworld:${result.type}:${Date.now()}:${randomUUID().slice(0, 8)}`;
-  const expiresAt = new Date(Date.now() + result.ttlHours * 3_600_000).toISOString();
-  // Cache a compact preview; live results can be fetched again when needed.
-  const embedText = `[${result.type.toUpperCase()}] ${result.content.slice(0, 400)}`;
-
-  const vector = await generateEmbedding(embedText.slice(0, 512));
-
-  try {
-    await vectorPost('/upsert', {
-      vectors: [{
-        id,
-        vector,
-        metadata: {
-          namespace: 'realworld',
-          type: result.type,
-          source: result.source.slice(0, 60),
-          query: result.query.slice(0, 80),
-          fetched_at: result.fetchedAt,
-          expires_at: expiresAt,
-          ttl_hours: result.ttlHours,
-          // 200-char preview — just enough for retrieval display, keeps payload small
-          preview: embedText.slice(0, 200),
-        },
-      }],
-    });
-  } catch (err) {
-    console.warn('[Realtime] Failed to store chunk:', err);
-  }
+  // Quarantined: historical records may contain private conversation context.
+  return;
 }
 
 /**
  * Query Pinecone for non-expired realworld chunks matching the query.
  */
 export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<string[]> {
-  if (!isPineconeReady()) return [];
-
-  const vector = await generateEmbedding(queryText.slice(0, 1500));
-  const semantic = { vector };
-  const now = new Date().toISOString();
-
-  let payload: any;
-  try {
-    payload = await vectorPost('/query', {
-      ...semantic,
-      topK: topK * 3,
-      includeMetadata: true,
-      includeData: true,
-      filter: { namespace: { $eq: 'realworld' } },
-    });
-  } catch {
-    return []; // Fail closed; never retry without the metadata scope.
-  }
-
-  const matches: any[] = payload?.result ?? payload?.matches ?? [];
-
-  return matches
-    .filter((m: any) => {
-      if (PRIVATE_CONTEXT_RE.test(`${m.metadata?.query || ''} ${m.data || m.metadata?.preview || ''}`)) return false;
-      const ns = m.metadata?.namespace as string | undefined;
-      const id = String(m.id);
-      if (ns !== 'realworld' && !id.startsWith('realworld:')) return false;
-      // Filter expired entries
-      const expiresAt = m.metadata?.expires_at as string | undefined;
-      if (expiresAt && expiresAt < now) return false;
-      return (m.score ?? 0) >= 0.40;
-    })
-    .map((m: any) => {
-      // Support both old `data` field and new `metadata.preview`
-      const text = typeof m.data === 'string' && m.data.length > 0
-        ? m.data
-        : typeof m.metadata?.preview === 'string'
-        ? m.metadata.preview
-        : '';
-      return text;
-    })
-    .filter(t => t.length > 0)
-    .slice(0, topK);
+  return []; // Never reuse potentially contaminated records across users.
 }
 
 // ─── Live news fetch ──────────────────────────────────────────────────────────

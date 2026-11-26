@@ -1,3 +1,5 @@
+import { stripInjectedContext } from '../utils/clean-message';
+import { loadCrossDeviceHistory } from '../memory/agent-memory';
 import { historyContent } from '../utils/followup-context';
 /**
  * POST /api/chat/personality
@@ -29,7 +31,8 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
   const startTime = Date.now();
 
   try {
-    const { message, history = [], settings = {}, userId, enablePersonality = true } = req.body;
+    const { message, settings = {}, enablePersonality = true } = req.body;
+    const userId = req.verifiedUserId;
 
     if (!message || typeof message !== 'string' || message.trim().length === 0) {
       res.status(400).json({ error: 'MISSING_MESSAGE', message: 'message field is required and non-empty' });
@@ -44,8 +47,9 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
     }
     const systemPrompt = buildSystemPrompt(settings.tone || 'helpful', settings.technicalLevel || 'intermediate');
 
+    const history = await loadCrossDeviceHistory(userId, 12);
     const convertedHistory = history.map((msg: any) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
+      role: msg.role === 'assistant' ? 'model' as const : 'user' as const,
       content: historyContent(msg),
     }));
 
@@ -64,7 +68,7 @@ export async function chatPersonalityHandler(req: Request, res: Response): Promi
 
     persistSohamMemory({
       userId,
-      userMessage: message,
+      userMessage: stripInjectedContext(message),
       assistantMessage: result.response.text,
       metadata: { toolsUsed: [...agentContext.toolsUsed.map((t: any) => t.tool), ...(result.response.toolsUsed ?? [])], modelUsed: result.modelUsed, personalityEnabled: enablePersonality },
     }).catch(() => {});

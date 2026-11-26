@@ -65,7 +65,7 @@ export interface ProfileUpdatePayload {
 
 function getSupabaseConfig() {
   const url = process.env.SUPABASE_URL ?? '';
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? '';
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
   return { url, key, ready: Boolean(url && key) };
 }
 
@@ -161,7 +161,7 @@ export class UserProfileService {
       if (!res.ok) return emptyProfile(userId);
 
       const rows = (await res.json()) as ProfileRow[];
-      if (rows.length === 0) return emptyProfile(userId);
+      if (rows.length === 0 || rows[0].user_id !== userId) return emptyProfile(userId);
       return rowToProfile(rows[0]);
     } catch {
       return emptyProfile(userId);

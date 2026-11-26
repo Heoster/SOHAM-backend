@@ -1,3 +1,4 @@
+import { requireOwnedUser } from '../../middleware/user-identity';
 /**
  * User Profile Routes
  *
@@ -14,7 +15,8 @@ import type { ProfileUpdatePayload } from '../../memory/user-profile-service';
 
 export async function getProfileHandler(req: Request, res: Response): Promise<void> {
   try {
-    const { userId } = req.params;
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     if (!userId || userId.trim().length === 0) {
       res.status(400).json({ error: 'MISSING_USER_ID', message: 'userId param is required' });
       return;
@@ -38,7 +40,8 @@ export async function getProfileHandler(req: Request, res: Response): Promise<vo
 
 export async function upsertProfileHandler(req: Request, res: Response): Promise<void> {
   try {
-    const { userId } = req.params;
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     if (!userId || userId.trim().length === 0) {
       res.status(400).json({ error: 'MISSING_USER_ID', message: 'userId param is required' });
       return;
@@ -78,7 +81,8 @@ export async function upsertProfileHandler(req: Request, res: Response): Promise
 
 export async function deleteProfileHandler(req: Request, res: Response): Promise<void> {
   try {
-    const { userId } = req.params;
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     if (!userId || userId.trim().length === 0) {
       res.status(400).json({ error: 'MISSING_USER_ID', message: 'userId param is required' });
       return;

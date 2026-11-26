@@ -1,3 +1,4 @@
+import { requireOwnedUser } from '../../middleware/user-identity';
 /**
  * POST /api/memory/extract
  * Extract and store memories from a conversation turn.
@@ -9,7 +10,9 @@ import { getMemoryExtractionService } from "../../memory/memory-extraction-servi
 
 export async function extractMemoriesHandler(req: Request, res: Response): Promise<void> {
   try {
-    const { userMessage, assistantResponse, userId } = req.body;
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
+    const { userMessage, assistantResponse } = req.body;
     if (!userMessage || !assistantResponse || !userId) {
       res.status(400).json({ error: "Missing required fields: userMessage, assistantResponse, userId" });
       return;

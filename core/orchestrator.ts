@@ -143,9 +143,9 @@ export async function buildSohamPromptContext(input: {
   agentPlan?: AgentPlan | null;
 }): Promise<SohamContextResult> {
   const { message, userId, history } = input;
-  // The frontend appends a SOHAM_CLOCK block to `message`. The MODEL keeps it
-  // (it needs the time), but analysis/tools/RAG must see only what the user said.
-  const userMessage = stripInjectedContext(message) || message;
+  // Never forward unverified client-injected memory. The backend supplies the
+  // current clock and verified owner-scoped personal context.
+  const userMessage = stripInjectedContext(message);
   // Tools get the plain-text history (content can be a multimodal array type)
   const historyForTools = (history ?? []).map(turn => ({
     role: turn.role,
@@ -194,12 +194,12 @@ export async function buildSohamPromptContext(input: {
     loadCrossDeviceHistory(userId, 6),
     searchLongTermMemories(userId, userMessage),
     userId ? profileService.getProfile(userId) : Promise.resolve(null),
-    knowledgeService.searchKnowledge(userMessage, 4, 0.48),
+    Promise.resolve([]), // Quarantined shared knowledge: may contain another user’s data.
     needsRealtime
       ? getRealtimeContext(userMessage, realtimeQueryType as any)
       : Promise.resolve({ datetime: getCurrentDateTimeContext(), liveData: undefined }),
     searchDocuments(userId, userMessage, 4),
-    queryRealtimeChunks(message, 3),
+    Promise.resolve([]), // Quarantined cross-user conversational cache.
   ]);
 
   // Unwrap results with graceful degradation
@@ -298,10 +298,8 @@ export async function buildSohamPromptContext(input: {
   }
 
   // ── Assemble prompt with context size guard ───────────────────────────────
-  // The frontend's clock block ends with "Answer every question about the time…
-  // Never guess it." — neutralize that imperative in the model prompt (clock
-  // values stay, so the model can still answer time questions correctly).
-  const modelMessage = scopeInjectedClockInstructions(message);
+  // Use only user-authored text; client memory/clock blocks are not trusted.
+  const modelMessage = userMessage; // Never trust client-injected memory/clock blocks as identity-bound data.
   const dtLine = buildDateTimePromptLine(realtimeCtx.datetime);
 
   let contextSection = contextBlocks.join('\n\n');

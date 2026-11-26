@@ -93,7 +93,7 @@ interface SupabaseConfig {
 
 function getSupabaseConfig(): SupabaseConfig | null {
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
   return { url, key };
 }
@@ -306,6 +306,7 @@ export class MemorySystemService {
     const rows = await res.json() as MemoryRow[];
 
     const results: MemorySearchResult[] = rows
+      .filter(row => row.user_id === userId)
       .map(row => {
         const memory = rowToEntry(row);
         const similarity = this.calculateSimilarity(queryEmbedding, memory.embedding);
@@ -338,7 +339,7 @@ export class MemorySystemService {
     if (!res.ok) return [];
 
     const rows = await res.json() as MemoryRow[];
-    return rows.map(rowToEntry);
+    return rows.filter(row => row.user_id === userId).map(rowToEntry);
   }
 
   async getMemoriesByCategory(userId: string, category: MemoryCategory): Promise<MemoryEntry[]> {
@@ -351,7 +352,7 @@ export class MemorySystemService {
     if (!res.ok) return [];
 
     const rows = await res.json() as MemoryRow[];
-    return rows.map(rowToEntry);
+    return rows.filter(row => row.user_id === userId).map(rowToEntry);
   }
 
   // ── Embeddings ─────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ interface VectorMatch {
 function getSupabaseConfig() {
   return {
     url: process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-    key: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '',
+    key: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   };
 }
 
@@ -47,14 +47,14 @@ export async function loadCrossDeviceHistory(userId?: string, limit = 8): Promis
   const { url, key } = getSupabaseConfig();
   const endpoint =
     `${url}/rest/v1/chat_history?user_id=eq.${encodeURIComponent(userId)}` +
-    `&select=role,content,created_at&order=created_at.desc&limit=${Math.max(1, Math.min(limit, 20))}`;
+    `&select=user_id,role,content,created_at&order=created_at.desc&limit=${Math.max(1, Math.min(limit, 20))}`;
   try {
     const response = await fetchWithTimeout(endpoint, {
       headers: { apikey: key, Authorization: `Bearer ${key}` },
     });
     if (!response.ok) return [];
     const rows = (await response.json()) as CrossDeviceMessage[];
-    return rows.reverse();
+    return rows.filter(row => (row as CrossDeviceMessage & { user_id?: string }).user_id === userId && (row.role === 'user' || row.role === 'assistant') && typeof row.content === 'string').reverse().map(({ role, content, created_at }) => ({ role, content, created_at }));
   } catch {
     return [];
   }

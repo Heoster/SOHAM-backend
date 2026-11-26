@@ -1,3 +1,4 @@
+import { loadCrossDeviceHistory } from '../memory/agent-memory';
 import { historyContent } from '../utils/followup-context';
 /**
  * Chat Handler — Express implementation
@@ -29,7 +30,8 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
 
   try {
-    const { message, history = [], settings = {}, userId } = req.body;
+    const { message, settings = {} } = req.body;
+    const userId = req.verifiedUserId;
 
     // ── Validation ──────────────────────────────────────────────────────────
     if (!message || typeof message !== 'string') {
@@ -52,14 +54,15 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
     }
 
     // ── Convert history ─────────────────────────────────────────────────────
+    const history = await loadCrossDeviceHistory(userId, 12);
     const convertedHistory = history.map((msg: any) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
+      role: msg.role === 'assistant' ? 'model' as const : 'user' as const,
       content: historyContent(msg),
     }));
 
     // Frontend appends a SOHAM_CLOCK block; strip it for intent routing and
     // memory writes. The model prompt keeps it (it needs the time).
-    const userMessage = stripInjectedContext(message) || message;
+    const userMessage = stripInjectedContext(message);
 
     // ── Intent detection (regex — deterministic fallback) ───────────────────
     const intentDetector = getIntentDetector();

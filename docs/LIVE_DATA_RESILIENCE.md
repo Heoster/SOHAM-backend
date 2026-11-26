@@ -9,10 +9,10 @@ and execution, keeps a bounded video-subject hint from widget history, and route
 anchored match follow-ups to the sports tool even when a planner returns an empty or
 unrelated search plan. Previous assistant prose is not treated as verified evidence.
 
-Both streaming and non-streaming chat paths preserve the widget subject. Clients
-must send recent history (including the initiating user request). If they omit
-history and widget metadata, the server cannot reconstruct what “this match” means.
-Widget titles are untrusted subject hints, not authoritative scorecards.
+Security update: chat now uses authenticated server-side history, not browser
+history/widget payloads, to prevent stale account data crossing sessions. A
+follow-up requires the initiating request to have been saved for the same verified
+user; otherwise SOHAM must ask for the match identity. See USER_DATA_ISOLATION.md.
 
 ## CricketData
 
