@@ -55,6 +55,30 @@ jobs:
       - name: Run news evidence and public-learning safety checks
         run: npm run test:news-learning
 
+      - name: Run cross-user isolation security tests
+        run: npm run test:user-isolation
+
       # Render may omit devDependencies; postinstall must still compile.
       - name: Verify production-only install and build
         run: npm ci --omit=dev && npm run typecheck && npm run build
+
+  privacy-database:
+    name: Private-table RLS migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-only-not-a-production-secret
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify lockdown against a permissive-policy fixture
+        run: |
+          set -o pipefail
+          cat scripts/rls-isolation-fixture.sql supabase/migrations/202611180001_private_memory_lockdown.sql scripts/rls-isolation-assertions.sql | docker exec -i ${{ job.services.postgres.id }} psql -U postgres -v ON_ERROR_STOP=1

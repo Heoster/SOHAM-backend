@@ -1,3 +1,4 @@
+import { loadCrossDeviceHistory } from '../memory/agent-memory';
 import { historyContent } from '../utils/followup-context';
 /**
  * POST /api/chat/stream
@@ -54,7 +55,8 @@ function sseEnd(res: Response): void {
 
 export async function chatStreamHandler(req: Request, res: Response): Promise<void> {
   const startTime = Date.now();
-  const { message, history = [], settings = {}, userId } = req.body;
+  const { message, settings = {} } = req.body;
+  const userId = req.verifiedUserId;
 
   // ── Validation ──────────────────────────────────────────────────────────────
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -74,7 +76,7 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
 
   // ── SSE headers ─────────────────────────────────────────────────────────────
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Cache-Control', 'private, no-store, no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // disable Nginx/Render proxy buffering
   res.flushHeaders();
@@ -100,13 +102,14 @@ export async function chatStreamHandler(req: Request, res: Response): Promise<vo
   }, 2000);
 
   try {
+    const history = await loadCrossDeviceHistory(userId, 12);
     const convertedHistory = history.map((msg: any) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
+      role: msg.role === 'assistant' ? 'model' as const : 'user' as const,
       content: historyContent(msg),
     }));
     // Frontend appends a SOHAM_CLOCK block to `message`; strip it for intent
     // routing and memory. The model prompt keeps it (it needs the time).
-    const userMessage = stripInjectedContext(message) || message;
+    const userMessage = stripInjectedContext(message);
 
     // ── Intent detection (regex — deterministic fallback) ────────────────────
     const intentDetector = getIntentDetector();

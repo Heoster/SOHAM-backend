@@ -55,7 +55,7 @@ async function main() {
   await autoLearnQAPair(stableQuestion, stableAnswer, 'test', true);
   assert.equal(writes, 0, 'private, transient, refusal and tool-derived QAs must not become FAQs');
   await autoLearnQAPair(stableQuestion, stableAnswer, 'test');
-  assert.equal(writes, 1, 'explicitly enabled safe stable FAQ can still be stored');
+  assert.equal(writes, 0, 'incident quarantine cannot be bypassed by the legacy public-learning flag');
   assert.equal(shouldLearnPublicQA('What is my password?', stableAnswer), false);
   assert.equal(hideUnsafePublicEntry({ question: polluted, content: stableAnswer }), true);
   assert.equal(hideUnsafePublicEntry({ question, content: stableAnswer, source: 'soham-test' }), true);

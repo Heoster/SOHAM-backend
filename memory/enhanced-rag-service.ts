@@ -60,7 +60,7 @@ import { isPineconeReady, vectorRequest as vectorPost } from './pinecone-vector'
 function getSupabaseConfig() {
   return {
     url: process.env.SUPABASE_URL ?? '',
-    key: process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? '',
+    key: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
   };
 }
 
@@ -88,7 +88,7 @@ async function querySupabaseMemories(
     if (!res.ok) return [];
 
     const data = await res.json() as any[];
-    return data.map(row => ({
+    return data.filter(row => row.user_id === userId).map(row => ({
       id: row.id,
       content: row.content,
       type: 'LONG_TERM' as const,
@@ -197,7 +197,7 @@ export class EnhancedRAGService {
           if (score < minSimilarity) return false;
           // Client-side user filter when server-side filter wasn't applied
           const uid = m.metadata?.user_id as string | undefined;
-          return uid === userId || String(m.id).startsWith(`${userId}:`);
+          return uid === userId;
         })
         .map((m: any) => ({
           id: String(m.id),

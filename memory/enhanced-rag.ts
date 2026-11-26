@@ -120,7 +120,7 @@ export async function queryRagEntries(
   const results: RagSearchResult[] = matches
     .filter((m: any) => {
       const uid = m.metadata?.user_id as string | undefined;
-      return uid === userId || String(m.id).startsWith(`${userId}:`);
+      return uid === userId;
     })
     .map((m: any) => {
       const similarity = m.score ?? 0;

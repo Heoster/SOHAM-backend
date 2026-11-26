@@ -1,3 +1,4 @@
+import { requireOwnedUser } from '../middleware/user-identity';
 /**
  * Documents — upload & manage user documents for RAG.
  *
@@ -37,7 +38,8 @@ export function uploadSingle(req: Request, res: Response, next: NextFunction): v
 
 export async function uploadDocumentHandler(req: Request, res: Response): Promise<void> {
   try {
-    const userId = String(req.body?.userId ?? req.query?.userId ?? '').trim();
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     if (!userId) {
       res.status(400).json({ error: 'MISSING_USER', message: 'userId is required (form field or query param)' });
       return;
@@ -82,7 +84,8 @@ export async function uploadDocumentHandler(req: Request, res: Response): Promis
 
 export async function listDocumentsHandler(req: Request, res: Response): Promise<void> {
   try {
-    const userId = String(req.query?.userId ?? '').trim();
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     if (!userId) { res.status(400).json({ error: 'MISSING_USER', message: 'userId query param is required' }); return; }
     const documents = await listDocuments(userId);
     res.json({ documents, count: documents.length });
@@ -95,7 +98,8 @@ export async function listDocumentsHandler(req: Request, res: Response): Promise
 
 export async function getDocumentHandler(req: Request, res: Response): Promise<void> {
   try {
-    const userId = String(req.query?.userId ?? '').trim();
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     const id = String(req.params?.id ?? '').trim();
     if (!userId || !id) { res.status(400).json({ error: 'MISSING_PARAMS', message: 'userId and document id are required' }); return; }
     const document = await getDocument(userId, id);
@@ -110,7 +114,8 @@ export async function getDocumentHandler(req: Request, res: Response): Promise<v
 
 export async function deleteDocumentHandler(req: Request, res: Response): Promise<void> {
   try {
-    const userId = String(req.query?.userId ?? '').trim();
+    const userId = requireOwnedUser(req, res);
+    if (!userId) return;
     const id = String(req.params?.id ?? '').trim();
     if (!userId || !id) { res.status(400).json({ error: 'MISSING_PARAMS', message: 'userId and document id are required' }); return; }
     const ok = await deleteDocument(userId, id);

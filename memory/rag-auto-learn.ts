@@ -3,8 +3,8 @@
  * ════════════════════════════════════════════════════════════════════════════
  * SOHAM's self-organising loop.
  *
- * Disabled by default; SOHAM_PUBLIC_AUTO_LEARN_ENABLED=1 explicitly enables it.
- * When enabled, guarded public inputs can:
+ * Quarantined following a cross-user disclosure report. The legacy opt-in no
+ * longer enables publishing. Retained helpers describe the pre-quarantine flow:
  *   1. Extracts factual claims from tool results (news, web search, weather, etc.)
  *   2. Stores them as public knowledge in Pinecone Vector
  *   3. Stores the Q→A pair so future identical/similar queries hit the cache

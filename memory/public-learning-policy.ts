@@ -1,6 +1,6 @@
-/** Automatic cross-user publishing is opt-in, separate from private user memory. */
+/** Incident quarantine: automatic cross-user publishing cannot be enabled at runtime. */
 export function publicAutoLearningEnabled(): boolean {
-  return process.env.SOHAM_PUBLIC_AUTO_LEARN_ENABLED === '1';
+  return false; // Incident containment: legacy opt-in must not re-enable cross-user publishing.
 }
 
 export const PRIVATE_CONTEXT_RE = /USER_MEMORY|USER_PROFILE|SOHAM_MEMORY|SOHAM_CONTEXT|\b(?:pref|preference)\s*:/i;
