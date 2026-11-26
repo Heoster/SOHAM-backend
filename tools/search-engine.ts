@@ -36,6 +36,7 @@
 
 import { stripInjectedContext } from '../utils/clean-message';
 import { readTopPages } from './page-reader';
+import { rankNewsEvidence } from './news-evidence';
 
 
 // ─── Shared types ─────────────────────────────────────────────────────────────
@@ -893,12 +894,12 @@ async function fetchCricAPI(query: string): Promise<SearchResult[]> {
 
 // ─── Step 4: Merge & Rank ─────────────────────────────────────────────────────
 
-function mergeAndRank(all: SearchResult[]): SearchResult[] {
+function mergeAndRank(all: SearchResult[], preserveOrder = false): SearchResult[] {
   const seen = new Set<string>();
   const out:  SearchResult[] = [];
 
   // Sort by score desc — Tavily results naturally float to top
-  all.sort((a, b) => b.score - a.score);
+  if (!preserveOrder) all.sort((a, b) => b.score - a.score);
 
   for (const r of all) {
     if (!r.title || !r.url) continue;
@@ -1043,7 +1044,7 @@ async function runSearchPipelineInternal(query: string): Promise<SearchPipelineR
   const rawCount = rawResults.length;
 
   // ── Step 4: Merge & rank ──────────────────────────────────────────────────
-  let merged = mergeAndRank(rawResults);
+  let merged = mergeAndRank(analysis.queryType === 'news' ? rankNewsEvidence(rawResults, query) : rawResults, analysis.queryType === 'news');
 
   // ── Full-page reading (runs after merge, on top results) ───────────────────
   // Jina Reader primary, Firecrawl fallback. Budget: 12s total. If it times
