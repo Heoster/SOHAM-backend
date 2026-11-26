@@ -1,3 +1,4 @@
+import { PRIVATE_CONTEXT_RE } from './public-learning-policy';
 /**
  * Realtime Knowledge Service
  * ════════════════════════════════════════════════════════════════════════════
@@ -164,6 +165,7 @@ export async function queryRealtimeChunks(queryText: string, topK = 3): Promise<
 
   return matches
     .filter((m: any) => {
+      if (PRIVATE_CONTEXT_RE.test(`${m.metadata?.query || ''} ${m.data || m.metadata?.preview || ''}`)) return false;
       const ns = m.metadata?.namespace as string | undefined;
       const id = String(m.id);
       if (ns !== 'realworld' && !id.startsWith('realworld:')) return false;

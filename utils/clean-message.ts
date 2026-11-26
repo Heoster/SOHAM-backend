@@ -35,6 +35,10 @@ export function scopeInjectedClockInstructions(message: string): string {
 
 export function stripInjectedContext(message: string): string {
   let m = (message ?? '').replace(/\r\n?/g, '\n');
+  // Client-appended private context is not part of the user's question.
+  // Markers can be concatenated directly after punctuation (as in production logs).
+  const privateIndex = m.search(/(?:USER_MEMORY|USER_PROFILE|SOHAM_MEMORY|SOHAM_CONTEXT)\b(?=[ \t]*(?:\n|pref\s*:|profile\s*:))/i);
+  if (privateIndex !== -1) m = m.slice(0, privateIndex);
 
   const clockIdx = m.search(/SOHAM_CLOCK/i);
   if (clockIdx !== -1) {

@@ -3,15 +3,16 @@
  * ════════════════════════════════════════════════════════════════════════════
  * SOHAM's self-organising loop.
  *
- * After every AI response, this service:
+ * Disabled by default; SOHAM_PUBLIC_AUTO_LEARN_ENABLED=1 explicitly enables it.
+ * When enabled, guarded public inputs can:
  *   1. Extracts factual claims from tool results (news, web search, weather, etc.)
  *   2. Stores them as public knowledge in Pinecone Vector
  *   3. Stores the Q→A pair so future identical/similar queries hit the cache
  *   4. Detects corrections in the user's message and stores them
  *   5. Detects suggestions and stores them
  *
- * This means SOHAM gets smarter with every conversation — without any
- * manual curation. The knowledge base grows organically.
+ * Never treat this as permission to publish private conversation context.
+ * Transient/tool-derived answers and failures must not become durable FAQs.
  *
  * Storage strategy:
  *   - Tool results → REAL_WORLD chunks (TTL: 1-24h depending on type)
@@ -20,6 +21,8 @@
  *   - Suggestions → SUGGESTION entries (permanent, medium confidence)
  */
 
+import { safePublicLearningText, shouldLearnPublicQA } from './public-learning-policy';
+import { stripInjectedContext } from '../utils/clean-message';
 import { getPineconeKnowledgeService } from './pinecone-knowledge-service';
 import { storeRealtimeChunk } from './realtime-knowledge-service';
 import type { SohamToolResult } from '../tools/agent-tools';
@@ -34,7 +37,9 @@ export async function autoLearnFromToolResults(
   toolResults: SohamToolResult[],
   originalQuery: string
 ): Promise<void> {
+  if (!safePublicLearningText(originalQuery)) return;
   for (const tool of toolResults) {
+    if (!safePublicLearningText(tool.query, tool.output)) continue;
     if (!tool.ok || tool.output.trim().length < 30) continue;
 
     const ttlMap: Record<string, number> = {
@@ -74,14 +79,11 @@ export async function autoLearnFromToolResults(
 export async function autoLearnQAPair(
   question: string,
   answer: string,
-  modelUsed: string
+  modelUsed: string,
+  hasToolResults = false
 ): Promise<void> {
-  // Only cache factual/informational answers, not conversational ones
-  const isFactual = /\b(what|who|when|where|why|how|define|explain|is|are|was|were|does|did|can|will)\b/i.test(question);
-  const isSubstantive = answer.trim().length > 100;
-  const isNotConversational = !/^(hi|hello|hey|thanks|thank you|ok|okay|sure|yes|no|bye|goodbye)/i.test(answer.trim());
-
-  if (!isFactual || !isSubstantive || !isNotConversational) return;
+  if (!shouldLearnPublicQA(question, answer, hasToolResults)) return;
+  question = stripInjectedContext(question);
 
   const service = getPineconeKnowledgeService();
   await service.storeKnowledge({
@@ -104,6 +106,7 @@ export async function autoDetectCorrection(
   userMessage: string,
   previousAssistantMessage: string
 ): Promise<void> {
+  if (!safePublicLearningText(userMessage, previousAssistantMessage)) return;
   const correctionPatterns = [
     /^(actually|no,|that'?s? (wrong|incorrect|not right)|you'?re? (wrong|incorrect)|wrong[,!]|incorrect[,!]|not quite|that'?s? not|the correct answer is|it'?s? actually|the right answer is)/i,
     /\b(correction:|actually,|to clarify:|to be precise:|in fact,|the truth is)\b/i,
@@ -129,6 +132,7 @@ export async function autoDetectSuggestion(
   userMessage: string,
   context: string
 ): Promise<void> {
+  if (!safePublicLearningText(userMessage, context)) return;
   const suggestionPatterns = [
     /^(you should|you could|try|consider|maybe|perhaps|a better way|instead of|rather than|i suggest|i recommend|it would be better)/i,
     /\b(suggestion:|tip:|note:|pro tip:|better approach:|alternatively,)\b/i,
@@ -160,12 +164,14 @@ export function triggerAutoLearn(input: {
 }): void {
   const { userMessage, assistantMessage, toolResults, modelUsed, previousAssistantMessage } = input;
 
+  if (!safePublicLearningText(userMessage, assistantMessage)) return;
+
   Promise.all([
     // Learn from tool results (news, weather, web search, etc.)
     autoLearnFromToolResults(toolResults, userMessage),
 
     // Cache the Q→A pair for future similar queries
-    autoLearnQAPair(userMessage, assistantMessage, modelUsed),
+    autoLearnQAPair(userMessage, assistantMessage, modelUsed, toolResults.length > 0),
 
     // Detect and store user corrections
     previousAssistantMessage

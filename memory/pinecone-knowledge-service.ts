@@ -1,3 +1,4 @@
+import { hideUnsafePublicEntry } from './public-learning-policy';
 /**
  * Pinecone Knowledge Service — Public Suggestions & Corrections
  * ════════════════════════════════════════════════════════════════════════════
@@ -191,7 +192,7 @@ export class PineconeKnowledgeService {
 
         return { entry, similarity, score };
       })
-      .filter(r => r.similarity >= minSimilarity && r.entry.content.length > 0)
+      .filter(r => r.similarity >= minSimilarity && r.entry.content.length > 0 && !hideUnsafePublicEntry(r.entry))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
 

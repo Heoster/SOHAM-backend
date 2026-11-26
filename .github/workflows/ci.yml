@@ -52,6 +52,9 @@ jobs:
       - name: Run live-data and follow-up regression checks (mocked)
         run: npm run test:live-data
 
+      - name: Run news evidence and public-learning safety checks
+        run: npm run test:news-learning
+
       # Render may omit devDependencies; postinstall must still compile.
       - name: Verify production-only install and build
         run: npm ci --omit=dev && npm run typecheck && npm run build

@@ -1,3 +1,4 @@
+import { buildNewsEvidence } from './news-evidence';
 import { weatherSearch, sportsSearch } from './live-data';
 import { resolveDataFollowup } from '../utils/followup-context';
 import { formatResultsForAI, searchDuckDuckGo } from './duckduckgo';
@@ -254,18 +255,7 @@ async function newsSearch(query: string): Promise<SohamToolResult> {
     // GNews/Google News RSS/DuckDuckGo), not a separate single-provider path.
     const { runSearchPipeline } = await import('./search-engine');
     const result = await runSearchPipeline(safeQuery);
-    const articles = result.results.slice(0, 6);
-    return {
-      tool: 'news_search',
-      query: safeQuery,
-      ok: articles.length > 0,
-      output: articles.length > 0
-        ? articles.map((article, i) =>
-            `${i + 1}. ${article.title}${article.publishedAt ? ` (${article.publishedAt})` : ''}: ${article.snippet}\n   Source: ${article.url}`
-          ).join('\n')
-        : 'No recent news results were returned by the configured search sources.',
-      sources: articles.map(article => ({ title: article.title, url: article.url })),
-    };
+    return buildNewsEvidence(safeQuery, result.results);
   } catch (error) {
     return { tool: 'news_search', query: safeQuery, ok: false, output: `News search failed: ${String(error)}` };
   }
